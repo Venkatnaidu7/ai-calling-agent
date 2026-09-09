@@ -10,6 +10,8 @@ from app.api.auth import router as auth_router
 from app.api.agents import router as agents_router
 from app.api.phone_numbers import router as phone_numbers_router
 from app.api.contacts import router as contacts_router
+from app.api.contact_consent import router as contact_consent_router
+from app.api.contact_import import router as contact_import_router
 from app.api.voice import router as voice_router
 from app.api.product import router as product_router
 from app.api.calls import router as calls_router
@@ -26,7 +28,7 @@ async def request_context(request:Request,call_next):
         response=await call_next(request); response.headers['X-Request-ID']=rid; response.headers['X-Response-Time-ms']=f'{(time.perf_counter()-start)*1000:.1f}'; return response
     except Exception:
         return JSONResponse(status_code=500,content={'error':{'code':'INTERNAL_ERROR','message':'Internal server error.','request_id':rid}},headers={'X-Request-ID':rid})
-for r in [auth_router,agents_router,phone_numbers_router,contacts_router,voice_router,product_router,calls_router,analytics_router,billing_router]: app.include_router(r,prefix='/api/v1')
+for r in [auth_router,agents_router,phone_numbers_router,contacts_router,contact_consent_router,contact_import_router,voice_router,product_router,calls_router,analytics_router,billing_router]: app.include_router(r,prefix='/api/v1')
 @app.get('/health')
 async def health(): return {'status':'ok','service':s.app_name}
 @app.get('/liveness')
