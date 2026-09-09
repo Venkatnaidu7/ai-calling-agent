@@ -4,13 +4,13 @@
 
 [![CI](https://github.com/Venkatnaidu7/ai-calling-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Venkatnaidu7/ai-calling-agent/actions/workflows/ci.yml)
 
-Built with **FastAPI, Next.js, PostgreSQL, Redis/Celery, Twilio Voice Media Streams, OpenAI Realtime, Stripe, Docker, and AWS/Terraform foundations**.
+Built with **FastAPI, Next.js, PostgreSQL, Redis/Celery, Twilio Voice Media Streams, OpenAI Realtime, Stripe, Docker/Podman, and AWS/Terraform foundations**.
 
 ---
 
 # ⚡ Fastest Installation — Windows, Linux & macOS
 
-The recommended local installation uses Docker. You do **not** need to install PostgreSQL, Redis, Node.js, or npm separately.
+The recommended local installation uses containers. You do **not** need to install PostgreSQL, Redis, Node.js, or npm separately.
 
 ## Prerequisites
 
@@ -18,14 +18,23 @@ The recommended local installation uses Docker. You do **not** need to install P
 |---|---|
 | Windows 10/11 | Git + Docker Desktop |
 | macOS | Git + Docker Desktop |
-| Linux | Git + Docker Engine + Docker Compose plugin |
+| Linux + Docker | Git + Docker Engine + Docker Compose plugin |
+| Linux + Podman | Git + Podman + Podman Compose |
 
-Verify Docker:
+Verify Docker when using Docker:
 
 ```bash
 git --version
 docker --version
 docker compose version
+```
+
+Verify Podman when using Podman:
+
+```bash
+git --version
+podman --version
+podman compose version
 ```
 
 > On Windows, run the commands below in PowerShell. On Linux/macOS, run them in Terminal.
@@ -89,7 +98,7 @@ Open:
 
 ---
 
-# 🐧 Linux Setup
+# 🐧 Linux Setup — Docker
 
 ### 1. Install Docker
 
@@ -151,6 +160,251 @@ curl http://localhost:8000/ready
 ```
 
 Open http://localhost:3000.
+
+---
+
+# 🦭 Linux Setup — Podman
+
+Podman is a supported container runtime for Linux. This is useful if you prefer **rootless containers** or want to run the project without Docker Engine.
+
+The repository's `docker-compose.yml` is Compose-compatible. With Podman, use the Podman Compose provider:
+
+```bash
+podman compose version
+```
+
+If `podman compose` is not available on your distribution, install the `podman-compose` package using your distribution's package manager or Python package tooling. Then verify:
+
+```bash
+podman-compose --version
+```
+
+> **Recommendation:** Prefer your Linux distribution's packaged Podman Compose provider when available. Podman Compose implementations can differ slightly by version, so use the command supported by your installed provider consistently.
+
+### 1. Install Podman
+
+For Ubuntu/Debian-based systems, install the packages provided by your distribution, for example:
+
+```bash
+sudo apt update
+sudo apt install -y podman
+```
+
+Then verify:
+
+```bash
+podman --version
+```
+
+Install Podman Compose if your distribution does not provide `podman compose`:
+
+```bash
+python3 -m pip install --user podman-compose
+```
+
+Then:
+
+```bash
+podman-compose --version
+```
+
+> Package names and recommended installation methods vary between Linux distributions. For Fedora, RHEL-compatible distributions, Arch, and other systems, use the official packages for that distribution.
+
+### 2. Clone the repository
+
+```bash
+git clone https://github.com/Venkatnaidu7/ai-calling-agent.git
+cd ai-calling-agent
+```
+
+### 3. Create `.env`
+
+```bash
+cp .env.example .env
+```
+
+Generate a secret:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Set it in `.env`:
+
+```env
+SECRET_KEY=your-generated-secret
+```
+
+### 4. Start with Podman
+
+Preferred command when the Podman Compose plugin is installed:
+
+```bash
+podman compose up --build -d
+```
+
+If your system provides the standalone `podman-compose` command instead:
+
+```bash
+podman-compose up --build -d
+```
+
+### 5. Check containers
+
+```bash
+podman ps
+```
+
+For Compose-managed services:
+
+```bash
+podman compose ps
+```
+
+or:
+
+```bash
+podman-compose ps
+```
+
+### 6. Run database migrations
+
+With the Podman Compose plugin:
+
+```bash
+podman compose exec api alembic upgrade head
+```
+
+With standalone Podman Compose:
+
+```bash
+podman-compose exec api alembic upgrade head
+```
+
+### 7. Verify the application
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+```
+
+Open:
+
+- http://localhost:3000 — dashboard
+- http://localhost:8000/docs — API documentation
+- http://localhost:8000/health — health
+
+### Podman common commands
+
+Start:
+
+```bash
+podman compose up -d
+```
+
+Rebuild:
+
+```bash
+podman compose up --build -d
+```
+
+View services:
+
+```bash
+podman compose ps
+```
+
+API logs:
+
+```bash
+podman compose logs -f api
+```
+
+All logs:
+
+```bash
+podman compose logs -f
+```
+
+Run tests:
+
+```bash
+podman compose exec api pytest -q
+```
+
+Run migrations:
+
+```bash
+podman compose exec api alembic upgrade head
+```
+
+Stop:
+
+```bash
+podman compose down
+```
+
+Complete local reset:
+
+```bash
+podman compose down -v
+podman compose up --build -d
+podman compose exec api alembic upgrade head
+```
+
+> ⚠️ `down -v` removes local PostgreSQL/Redis volumes and therefore deletes local database data. Review your Podman Compose provider's behavior before using it on any environment containing data you need.
+
+### Podman rootless notes
+
+Podman is designed to support rootless containers. For this project:
+
+- Prefer running Podman as your normal Linux user rather than using `sudo` unless your environment specifically requires rootful containers.
+- Make sure your user session has the required user namespaces and networking support enabled by your Linux distribution.
+- If published ports fail, first try ports above 1024 or check your distribution's rootless networking configuration.
+- If containers cannot access the network, inspect the Podman networking configuration with `podman network ls` and `podman network inspect <network>`.
+- If volume permissions cause startup failures, inspect the mounted volume and container logs before changing ownership or switching to rootful mode.
+
+### Podman troubleshooting
+
+Check all containers:
+
+```bash
+podman ps -a
+```
+
+Check images:
+
+```bash
+podman images
+```
+
+Check networks:
+
+```bash
+podman network ls
+```
+
+Inspect API logs:
+
+```bash
+podman logs --tail=200 <api-container>
+```
+
+If Compose itself fails:
+
+```bash
+podman compose version
+podman compose config
+```
+
+If using standalone Podman Compose:
+
+```bash
+podman-compose --version
+podman-compose config
+```
+
+> If a Compose feature is not supported by the installed Podman Compose implementation, do not modify the application blindly. Check the provider version and logs first; the same `docker-compose.yml` may require a small runtime-specific adjustment.
 
 ---
 
@@ -217,7 +471,7 @@ Open http://localhost:3000.
 
 ---
 
-# 🔄 Common Commands — All Platforms
+# 🔄 Common Commands — Docker Platforms
 
 ### Start
 
@@ -288,8 +542,8 @@ Important variables:
 | Variable | Purpose | First local boot |
 |---|---|---|
 | `SECRET_KEY` | Application/JWT signing | **Required** |
-| `DATABASE_URL` | PostgreSQL | Docker default |
-| `REDIS_URL` | Redis | Docker default |
+| `DATABASE_URL` | PostgreSQL | Docker/Podman default |
+| `REDIS_URL` | Redis | Docker/Podman default |
 | `FRONTEND_URL` | Dashboard origin | `http://localhost:3000` |
 | `CORS_ORIGINS` | Browser origins | `http://localhost:3000` |
 | `PUBLIC_BASE_URL` | Public API URL | Required for live calls |
@@ -340,6 +594,12 @@ Then rebuild:
 docker compose up -d --build api celery
 ```
 
+For Podman:
+
+```bash
+podman compose up -d --build api celery
+```
+
 Keep outbound calling disabled until consent, compliance, provider configuration, and end-to-end testing are complete.
 
 ---
@@ -378,7 +638,7 @@ Phone → Twilio → FastAPI Voice Gateway → OpenAI Realtime
 - **Telephony:** Twilio Voice Media Streams
 - **Realtime AI:** OpenAI Realtime
 - **Billing:** Stripe
-- **Containers:** Docker + Docker Compose
+- **Containers:** Docker + Docker Compose or Podman + Podman Compose
 - **Cloud foundation:** AWS + Terraform
 - **CI:** GitHub Actions
 
@@ -421,6 +681,13 @@ docker compose exec api pytest -q
 docker compose exec api alembic current
 ```
 
+Inside Podman:
+
+```bash
+podman compose exec api pytest -q
+podman compose exec api alembic current
+```
+
 Health checks:
 
 ```bash
@@ -437,22 +704,41 @@ curl.exe http://localhost:8000/ready
 
 # 🛠️ Troubleshooting
 
-### Docker is not recognized
+### Docker/Podman command is not recognized
 
-Install/start Docker Desktop on Windows/macOS, or Docker Engine + Compose on Linux. Then reopen your terminal.
+Install/start the selected container runtime, then reopen your terminal.
+
+Docker:
 
 ```bash
 docker --version
 docker compose version
 ```
 
+Podman:
+
+```bash
+podman --version
+podman compose version
+```
+
 ### API is restarting
+
+Docker:
 
 ```bash
 docker compose logs --tail=200 api
 ```
 
+Podman:
+
+```bash
+podman compose logs --tail=200 api
+```
+
 ### PostgreSQL problem
+
+Docker:
 
 ```bash
 docker compose ps postgres
@@ -460,12 +746,28 @@ docker compose logs --tail=100 postgres
 docker compose restart postgres api
 ```
 
+Podman:
+
+```bash
+podman compose ps postgres
+podman compose logs --tail=100 postgres
+```
+
 ### Redis problem
+
+Docker:
 
 ```bash
 docker compose ps redis
 docker compose logs --tail=100 redis
 docker compose restart redis celery api
+```
+
+Podman:
+
+```bash
+podman compose ps redis
+podman compose logs --tail=100 redis
 ```
 
 ### Port 3000 or 8000 is busy
@@ -504,6 +806,8 @@ Before production launch, configure and validate:
 - Recording/retention policy
 - Production AWS infrastructure
 - End-to-end voice testing
+- Container runtime hardening
+- Rootless/container permissions where appropriate
 
 This repository is a **production-oriented foundation**, not a claim that every production requirement is complete. See `docs/IMPLEMENTATION_STATUS.md` for the current status.
 
@@ -524,12 +828,24 @@ This repository is a **production-oriented foundation**, not a claim that every 
 
 # 🤝 Development Workflow
 
+Docker:
+
 ```bash
 git pull origin main
 docker compose up --build -d
 docker compose exec api alembic upgrade head
 docker compose exec api pytest -q
 docker compose ps
+```
+
+Podman:
+
+```bash
+git pull origin main
+podman compose up --build -d
+podman compose exec api alembic upgrade head
+podman compose exec api pytest -q
+podman compose ps
 ```
 
 Before pushing:
