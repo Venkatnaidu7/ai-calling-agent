@@ -3,7 +3,8 @@ import hashlib
 import hmac
 import json
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,8 @@ from app.providers.openai_realtime import RealtimeBridge
 from app.providers.twilio import connect_stream_xml, validate_twilio, validate_twilio_ws
 
 router = APIRouter(tags=['voice'])
+
+STATUS_MAP = {'queued': 'QUEUED', 'initiated': 'QUEUED', 'ringing': 'RINGING', 'in-progress': 'IN_PROGRESS', 'completed': 'COMPLETED', 'busy': 'BUSY', 'no-answer': 'NO_ANSWER', 'failed': 'FAILED', 'canceled': 'FAILED'}
 
 
 def stream_token(call_id):
@@ -32,7 +35,8 @@ def stream_url(call_id):
 
 
 def stream_response(call_id):
-    return connect_stream_xml(stream_url(call_id), {'call_id': call_id})
+    xml = connect_stream_xml(stream_url(call_id), {'call_id': call_id})
+    return Response(content=xml, media_type='application/xml')
 
 
 async def load_agent_version(db: AsyncSession, pn: PhoneNumber):
@@ -84,17 +88,14 @@ async def outbound(call_id: uuid.UUID, request: Request, db: AsyncSession = Depe
 async def status(request: Request, db: AsyncSession = Depends(get_db)):
     form = dict(await request.form())
     validate_twilio(request, form)
-    provider_sid = form.get('CallSid')
-    call = await db.scalar(select(Call).where(Call.provider_call_id == provider_sid))
+    call = await db.scalar(select(Call).where(Call.provider_call_id == form.get('CallSid')))
     if not call: return {'ok': True}
-    mapping = {'queued': 'QUEUED', 'initiated': 'QUEUED', 'ringing': 'RINGING', 'in-progress': 'IN_PROGRESS', 'completed': 'COMPLETED', 'busy': 'BUSY', 'no-answer': 'NO_ANSWER', 'failed': 'FAILED', 'canceled': 'FAILED'}
-    call.status = mapping.get((form.get('CallStatus') or '').lower(), call.status)
+    call.status = STATUS_MAP.get((form.get('CallStatus') or '').lower(), call.status)
     if form.get('CallDuration'):
         try: call.duration_seconds = int(form['CallDuration'])
         except ValueError: pass
     if form.get('RecordingUrl'): call.recording_url = form['RecordingUrl']
     if call.status in {'COMPLETED', 'BUSY', 'NO_ANSWER', 'FAILED'}:
-        from datetime import datetime, timezone
         call.ended_at = datetime.now(timezone.utc)
     await db.commit()
     return {'ok': True}
@@ -153,6 +154,7 @@ async def stream(websocket: WebSocket, call_id: uuid.UUID, token: str | None = N
                 call = await db.scalar(select(Call).where(Call.id == call_id))
                 if call and call.status in {'QUEUED', 'RINGING', 'IN_PROGRESS'}:
                     call.status = 'COMPLETED'
+                    call.ended_at = datetime.now(timezone.utc)
                     await db.commit()
         except Exception:
             pass
