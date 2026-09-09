@@ -1,0 +1,28 @@
+Phase 6 E2E acceptance: Phone <-> Twilio <-> HTTPS/WSS FastAPI <-> OpenAI Realtime.
+
+Configure apps/api/.env with PUBLIC_BASE_URL=https://<public-api-host>, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, OPENAI_API_KEY, OPENAI_REALTIME_MODEL=gpt-realtime-2.1, OUTBOUND_ENABLED=true. Never commit secrets.
+
+Run: alembic upgrade head
+
+Twilio inbound webhook POST: https://<public-api-host>/api/v1/voice/twilio/inbound
+Twilio status callback POST: https://<public-api-host>/api/v1/voice/twilio/status
+
+Inbound acceptance:
+- call connects
+- AI greeting audible
+- caller audio reaches Realtime as PCMU
+- AI audio reaches caller
+- barge-in interrupts response
+- completion is persisted
+
+Outbound acceptance:
+- compliant test contact can be called
+- call uses published agent version
+- AI greeting audible
+- two-way audio works
+- status callbacks update lifecycle
+
+Security:
+- Twilio signatures validated
+- invalid stream token rejected
+- no secrets committed
