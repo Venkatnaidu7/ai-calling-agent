@@ -1,0 +1,1 @@
+Phase 6 E2E automated contract coverage is included. Real phone E2E is intentionally not claimed until Twilio and OpenAI credentials, a public HTTPS/WSS endpoint, and an actual test call are available.
