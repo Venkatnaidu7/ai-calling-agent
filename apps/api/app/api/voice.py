@@ -1,55 +1,158 @@
-import asyncio,hashlib,hmac,json,uuid
-from fastapi import APIRouter,Request,WebSocket,HTTPException,WebSocketDisconnect,Depends
+import asyncio
+import hashlib
+import hmac
+import json
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.session import SessionLocal
-from app.models import PhoneNumber,Agent,AgentVersion,Call
-from app.providers.twilio import validate_twilio,validate_twilio_ws,connect_stream_xml
-from app.providers.openai_realtime import RealtimeBridge
+
 from app.core.config import get_settings
-router=APIRouter(tags=['voice'])
-def stream_token(call_id):return hmac.new(get_settings().secret_key.encode(),str(call_id).encode(),hashlib.sha256).hexdigest()
-def valid_stream_token(call_id,token):return hmac.compare_digest(stream_token(call_id),token or '')
+from app.db.session import SessionLocal, get_db
+from app.models import Agent, AgentVersion, Call, Contact, PhoneNumber
+from app.providers.openai_realtime import RealtimeBridge
+from app.providers.twilio import connect_stream_xml, validate_twilio, validate_twilio_ws
+
+router = APIRouter(tags=['voice'])
+
+
+def stream_token(call_id):
+    return hmac.new(get_settings().secret_key.encode(), str(call_id).encode(), hashlib.sha256).hexdigest()
+
+
+def valid_stream_token(call_id, token):
+    return hmac.compare_digest(stream_token(call_id), token or '')
+
+
+def stream_url(call_id):
+    base = get_settings().public_base_url.rstrip('/')
+    if not base.startswith('https://'):
+        raise HTTPException(503, 'public_base_url must use HTTPS for Twilio Media Streams')
+    return base.replace('https://', 'wss://', 1) + f'/api/v1/voice/stream/{call_id}?token={stream_token(call_id)}'
+
+
+def stream_response(call_id):
+    return connect_stream_xml(stream_url(call_id), {'call_id': call_id})
+
+
+async def load_agent_version(db: AsyncSession, pn: PhoneNumber):
+    if not pn.agent_id:
+        raise HTTPException(503, 'Phone number has no AI agent assigned')
+    agent = await db.scalar(select(Agent).where(Agent.id == pn.agent_id, Agent.tenant_id == pn.tenant_id, Agent.active == True))
+    if not agent or not agent.active_version_id:
+        raise HTTPException(503, 'Agent unavailable')
+    version = await db.scalar(select(AgentVersion).where(AgentVersion.id == agent.active_version_id, AgentVersion.tenant_id == pn.tenant_id, AgentVersion.status == 'PUBLISHED'))
+    if not version:
+        raise HTTPException(503, 'Published agent unavailable')
+    return agent, version
+
+
+async def create_inbound_call(form, pn, db):
+    agent, version = await load_agent_version(db, pn)
+    contact = await db.scalar(select(Contact).where(Contact.tenant_id == pn.tenant_id, Contact.phone == form.get('From'), Contact.status.notin_(['ARCHIVED'])))
+    call = Call(tenant_id=pn.tenant_id, agent_id=agent.id, agent_version_id=version.id, phone_number_id=pn.id, contact_id=contact.id if contact else None, provider_call_id=form.get('CallSid'), direction='INBOUND', from_number=form.get('From'), to_number=form.get('To'), status='IN_PROGRESS')
+    db.add(call)
+    await db.commit()
+    return call
+
+
 @router.post('/twilio/inbound')
-async def inbound(request:Request,db:AsyncSession=Depends(__import__('app.db.session',fromlist=['get_db']).get_db)):
-    form=dict(await request.form());validate_twilio(request,form);to=form.get('To');pn=await db.scalar(select(PhoneNumber).where(PhoneNumber.e164==to,PhoneNumber.active==True))
-    if not pn:raise HTTPException(404,'Phone number not configured')
-    if not (pn.capabilities or {}).get('inbound',True):raise HTTPException(403,'Inbound calling is disabled for this phone number')
-    agent=await db.scalar(select(Agent).where(Agent.id==pn.agent_id,Agent.tenant_id==pn.tenant_id,Agent.active==True))
-    if not agent or not agent.active_version_id:raise HTTPException(503,'Agent unavailable')
-    v=await db.scalar(select(AgentVersion).where(AgentVersion.id==agent.active_version_id,AgentVersion.tenant_id==pn.tenant_id,AgentVersion.status=='PUBLISHED'))
-    if not v:raise HTTPException(503,'Published agent unavailable')
-    call=Call(tenant_id=pn.tenant_id,agent_id=agent.id,agent_version_id=v.id,phone_number_id=pn.id,provider_call_id=form.get('CallSid'),direction='INBOUND',from_number=form.get('From'),to_number=to,status='ANSWERED');db.add(call);await db.flush();await db.commit()
-    base=get_settings().public_base_url;ws=base.replace('https://','wss://').replace('http://','ws://')+f'/api/v1/voice/stream/{call.id}?token={stream_token(call.id)}'
-    return connect_stream_xml(ws,{'call_id':call.id})
+async def inbound(request: Request, db: AsyncSession = Depends(get_db)):
+    form = dict(await request.form())
+    validate_twilio(request, form)
+    to = form.get('To')
+    pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.e164 == to, PhoneNumber.active == True, PhoneNumber.provider == 'twilio'))
+    if not pn: raise HTTPException(404, 'Phone number not configured')
+    if not (pn.capabilities or {}).get('inbound', True): raise HTTPException(403, 'Inbound calling is disabled for this phone number')
+    call = await create_inbound_call(form, pn, db)
+    return stream_response(call.id)
+
+
+@router.post('/twilio/outbound/{call_id}')
+async def outbound(call_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    form = dict(await request.form())
+    validate_twilio(request, form)
+    call = await db.scalar(select(Call).where(Call.id == call_id, Call.provider_call_id == form.get('CallSid')))
+    if not call: raise HTTPException(404, 'Call not found')
+    if call.direction != 'OUTBOUND': raise HTTPException(409, 'Call direction mismatch')
+    call.status = 'IN_PROGRESS'
+    await db.commit()
+    return stream_response(call.id)
+
+
 @router.post('/twilio/status')
-async def status(request:Request,db:AsyncSession=Depends(__import__('app.db.session',fromlist=['get_db']).get_db)):
-    form=dict(await request.form());validate_twilio(request,form);call=await db.scalar(select(Call).where(Call.provider_call_id==form.get('CallSid')))
-    if call:call.status=form.get('CallStatus','').upper();await db.commit()
-    return {'ok':True}
-@router.websocket('/voice/stream/{call_id}')
-async def stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None):
-    if not valid_stream_token(call_id,token):await websocket.close(code=1008);return
-    try:validate_twilio_ws(websocket)
-    except HTTPException:await websocket.close(code=1008);return
-    await websocket.accept();bridge=None;stream_sid=None;task=None
+async def status(request: Request, db: AsyncSession = Depends(get_db)):
+    form = dict(await request.form())
+    validate_twilio(request, form)
+    provider_sid = form.get('CallSid')
+    call = await db.scalar(select(Call).where(Call.provider_call_id == provider_sid))
+    if not call: return {'ok': True}
+    mapping = {'queued': 'QUEUED', 'initiated': 'QUEUED', 'ringing': 'RINGING', 'in-progress': 'IN_PROGRESS', 'completed': 'COMPLETED', 'busy': 'BUSY', 'no-answer': 'NO_ANSWER', 'failed': 'FAILED', 'canceled': 'FAILED'}
+    call.status = mapping.get((form.get('CallStatus') or '').lower(), call.status)
+    if form.get('CallDuration'):
+        try: call.duration_seconds = int(form['CallDuration'])
+        except ValueError: pass
+    if form.get('RecordingUrl'): call.recording_url = form['RecordingUrl']
+    if call.status in {'COMPLETED', 'BUSY', 'NO_ANSWER', 'FAILED'}:
+        from datetime import datetime, timezone
+        call.ended_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {'ok': True}
+
+
+@router.websocket('/stream/{call_id}')
+async def stream(websocket: WebSocket, call_id: uuid.UUID, token: str | None = None):
+    if not valid_stream_token(call_id, token):
+        await websocket.close(code=1008); return
+    try:
+        validate_twilio_ws(websocket)
+    except HTTPException:
+        await websocket.close(code=1008); return
+    await websocket.accept()
+    bridge = None
+    stream_sid = None
+    task = None
     try:
         async with SessionLocal() as db:
-            call=await db.scalar(select(Call).where(Call.id==call_id));
-            if not call:await websocket.close(code=1008);return
-            v=await db.scalar(select(AgentVersion).where(AgentVersion.id==call.agent_version_id,AgentVersion.tenant_id==call.tenant_id))
-        bridge=RealtimeBridge(v.system_instructions,v.voice,v.language);await bridge.connect()
-        async def ai_loop():
-            async for e in bridge.events():
-                if e.get('type') in {'response.output_audio.delta','response.audio.delta'} and stream_sid and e.get('delta'):
-                    await websocket.send_text(json.dumps({'event':'media','streamSid':stream_sid,'media':{'payload':e['delta']}}))
-                elif e.get('type')=='input_audio_buffer.speech_started':await bridge.cancel()
+            call = await db.scalar(select(Call).where(Call.id == call_id))
+            if not call: await websocket.close(code=1008); return
+            version = await db.scalar(select(AgentVersion).where(AgentVersion.id == call.agent_version_id, AgentVersion.tenant_id == call.tenant_id))
+        if not version:
+            await websocket.close(code=1011); return
+        s = get_settings()
+        if s.openai_api_key:
+            bridge = RealtimeBridge(version.system_instructions, version.voice, version.language)
+            await bridge.connect()
+
+            async def ai_loop():
+                async for event in bridge.events():
+                    if event.get('type') in {'response.output_audio.delta', 'response.audio.delta'} and stream_sid and event.get('delta'):
+                        await websocket.send_text(json.dumps({'event': 'media', 'streamSid': stream_sid, 'media': {'payload': event['delta']}}))
+                    elif event.get('type') == 'input_audio_buffer.speech_started':
+                        await bridge.cancel()
+
         while True:
-            m=json.loads(await websocket.receive_text());et=m.get('event')
-            if et=='start':stream_sid=m['start']['streamSid'];task=asyncio.create_task(ai_loop())
-            elif et=='media':await bridge.send_audio(m['media']['payload'])
-            elif et=='stop':break
-    except (WebSocketDisconnect,Exception):pass
+            message = json.loads(await websocket.receive_text())
+            event_type = message.get('event')
+            if event_type == 'start':
+                stream_sid = message['start']['streamSid']
+                if bridge: task = asyncio.create_task(ai_loop())
+            elif event_type == 'media' and bridge:
+                await bridge.send_audio(message['media']['payload'])
+            elif event_type == 'stop':
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
     finally:
-        if task:task.cancel()
-        if bridge:await bridge.close()
+        if task: task.cancel()
+        if bridge: await bridge.close()
+        try:
+            async with SessionLocal() as db:
+                call = await db.scalar(select(Call).where(Call.id == call_id))
+                if call and call.status in {'QUEUED', 'RINGING', 'IN_PROGRESS'}:
+                    call.status = 'COMPLETED'
+                    await db.commit()
+        except Exception:
+            pass
