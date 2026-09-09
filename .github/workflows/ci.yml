@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: voice
+          POSTGRES_PASSWORD: voice
+          POSTGRES_DB: voice
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U voice -d voice"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+      redis:
+        image: redis:8
+        ports: ['6379:6379']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r apps/api/requirements.txt
+      - run: python -m compileall -q apps/api/app
+      - run: cd apps/api && PYTHONPATH=. pytest tests -q
+        env:
+          DATABASE_URL: postgresql+asyncpg://voice:voice@localhost:5432/voice
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-secret
