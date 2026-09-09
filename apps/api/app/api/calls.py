@@ -1,6 +1,6 @@
 from uuid import UUID
-from fastapi import APIRouter,Depends,HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter,Depends,HTTPException,Query
+from sqlalchemy import select,func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.api.deps import tenant_id
@@ -9,19 +9,37 @@ from app.services.compliance import check_outbound
 from app.core.config import get_settings
 from twilio.rest import Client
 router=APIRouter(prefix='/calls',tags=['calls'])
+
 @router.get('')
-async def list_calls(t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):return (await db.scalars(select(Call).where(Call.tenant_id==UUID(t)).order_by(Call.created_at.desc()).limit(100))).all()
+async def list_calls(status: str|None=Query(None,max_length=30), direction: str|None=Query(None,max_length=20), contact_id: UUID|None=None, limit:int=Query(50,ge=1,le=200), offset:int=Query(0,ge=0), t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):
+    stmt=select(Call).where(Call.tenant_id==UUID(t)).order_by(Call.created_at.desc()).offset(offset).limit(limit)
+    if status: stmt=stmt.where(Call.status==status.upper())
+    if direction: stmt=stmt.where(Call.direction==direction.upper())
+    if contact_id: stmt=stmt.where(Call.contact_id==contact_id)
+    return (await db.scalars(stmt)).all()
+
+@router.get('/summary')
+async def call_summary(t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):
+    tid=UUID(t)
+    total=await db.scalar(select(func.count(Call.id)).where(Call.tenant_id==tid)) or 0
+    active=await db.scalar(select(func.count(Call.id)).where(Call.tenant_id==tid,Call.status.in_(['QUEUED','RINGING','IN_PROGRESS']))) or 0
+    completed=await db.scalar(select(func.count(Call.id)).where(Call.tenant_id==tid,Call.status=='COMPLETED')) or 0
+    failed=await db.scalar(select(func.count(Call.id)).where(Call.tenant_id==tid,Call.status.in_(['FAILED','NO_ANSWER','BUSY']))) or 0
+    return {'total':total,'active':active,'completed':completed,'failed':failed}
+
 @router.get('/{call_id}')
 async def get_call(call_id:UUID,t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):
     x=await db.scalar(select(Call).where(Call.id==call_id,Call.tenant_id==UUID(t)))
     if not x:raise HTTPException(404,'Call not found')
     return x
+
 @router.post('/outbound')
 async def outbound(contact_id:UUID,phone_number_id:UUID,t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):
     s=get_settings()
     if not s.outbound_enabled:raise HTTPException(403,'Outbound calling is disabled')
     c=await db.scalar(select(Contact).where(Contact.id==contact_id,Contact.tenant_id==UUID(t)));pn=await db.scalar(select(PhoneNumber).where(PhoneNumber.id==phone_number_id,PhoneNumber.tenant_id==UUID(t)))
     if not c or not pn:raise HTTPException(404,'Contact or phone number not found')
+    if not pn.active or not (pn.capabilities or {}).get('outbound',True):raise HTTPException(403,'Outbound calling is disabled for this phone number')
     gate,reason=await check_outbound(db,UUID(t),contact_id)
     if gate!='ALLOWED':raise HTTPException(403,reason)
     if not s.twilio_account_sid or not s.twilio_auth_token:raise HTTPException(503,'Twilio is not configured')
