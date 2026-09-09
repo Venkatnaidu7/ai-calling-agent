@@ -6,7 +6,7 @@ from twilio.rest import Client
 
 from app.db.session import get_db
 from app.api.deps import tenant_id
-from app.models import Call, Contact, PhoneNumber
+from app.models import Agent, AgentVersion, Call, Contact, PhoneNumber
 from app.services.compliance import check_outbound
 from app.core.config import get_settings
 
@@ -79,8 +79,12 @@ async def outbound(contact_id: UUID, phone_number_id: UUID, t=Depends(tenant_id)
     gate, reason = await check_outbound(db, tid, contact_id)
     if gate != 'ALLOWED': raise HTTPException(403, reason)
     if not pn.agent_id: raise HTTPException(409, 'Phone number has no AI agent assigned')
+    agent = await db.scalar(select(Agent).where(Agent.id == pn.agent_id, Agent.tenant_id == tid, Agent.active == True))
+    if not agent or not agent.active_version_id: raise HTTPException(409, 'Phone number agent has no active published version')
+    version = await db.scalar(select(AgentVersion).where(AgentVersion.id == agent.active_version_id, AgentVersion.agent_id == agent.id, AgentVersion.tenant_id == tid, AgentVersion.status == 'PUBLISHED'))
+    if not version: raise HTTPException(409, 'Phone number agent has no published version')
     if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
-    call = Call(tenant_id=tid, phone_number_id=pn.id, agent_id=pn.agent_id, contact_id=c.id, direction='OUTBOUND', from_number=pn.e164, to_number=c.phone, status='QUEUED')
+    call = Call(tenant_id=tid, phone_number_id=pn.id, agent_id=agent.id, agent_version_id=version.id, contact_id=c.id, direction='OUTBOUND', from_number=pn.e164, to_number=c.phone, status='QUEUED')
     db.add(call); await db.flush()
     url = public_url(f'/api/v1/voice/twilio/outbound/{call.id}')
     status_url = public_url('/api/v1/voice/twilio/status')
