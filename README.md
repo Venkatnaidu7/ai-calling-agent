@@ -1,19 +1,25 @@
 # AI Calling Agent
 
-Production-oriented, multi-tenant AI phone calling platform for inbound and outbound voice conversations.
+> **Production-oriented AI voice calling platform for inbound and outbound phone conversations.**
+>
+> Built with FastAPI, Next.js, PostgreSQL, Redis/Celery, Twilio Voice Media Streams, OpenAI Realtime, Stripe, Docker, and AWS/Terraform foundations.
 
-> **Goal:** get the platform running locally as fast as possible, then connect Twilio + OpenAI for real phone calls.
+[![CI](https://github.com/Venkatnaidu7/ai-calling-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Venkatnaidu7/ai-calling-agent/actions/workflows/ci.yml)
 
 ## ⚡ Fastest Windows Setup
 
-### 1. Install the prerequisites
+This is the recommended path for getting the platform running locally on **Windows 10/11**.
 
-You only need these for the local Docker setup:
+### What you need
+
+Install:
 
 - **Git**
 - **Docker Desktop** with Docker Compose
 
-Verify in PowerShell:
+You do **not** need to install PostgreSQL, Redis, Python, Node.js, or npm separately for the Docker-based setup.
+
+Verify from PowerShell:
 
 ```powershell
 git --version
@@ -21,65 +27,50 @@ docker --version
 docker compose version
 ```
 
-If all three commands work, continue.
+If those commands work, continue.
 
-### 2. Clone the repository
+### 1. Clone the repository
 
 ```powershell
 git clone https://github.com/Venkatnaidu7/ai-calling-agent.git
 cd ai-calling-agent
 ```
 
-### 3. Create your environment file
+### 2. Create the environment file
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-For the **first local boot**, you can leave the provider API keys empty. The local API, PostgreSQL, Redis and web dashboard can be started before connecting live voice providers.
-
-### 4. Start everything
+Generate a secure application secret:
 
 ```powershell
-docker compose up --build
+python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Keep this terminal running.
+Open `.env` and replace:
 
-### 5. Run database migrations
-
-Open a **second PowerShell** in the project directory:
-
-```powershell
-docker compose exec api alembic upgrade head
+```env
+SECRET_KEY=replace-with-a-long-random-secret
 ```
 
-### 6. Open the application
+with the generated value.
 
-| Service | URL |
-|---|---|
-| Web dashboard | http://localhost:3000 |
-| API | http://localhost:8000 |
-| API documentation | http://localhost:8000/docs |
-| Health check | http://localhost:8000/health |
+For the **first local boot**, OpenAI, Twilio, and Stripe credentials can remain empty.
 
-If `/health` returns successfully, the backend is running.
-
----
-
-## 🚀 One-Command Windows Start
-
-After cloning and creating `.env`, you can use:
+### 3. Start the complete local stack
 
 ```powershell
 docker compose up --build -d
 ```
 
-Then:
+This starts:
 
-```powershell
-docker compose exec api alembic upgrade head
-```
+- Next.js web dashboard
+- FastAPI API
+- PostgreSQL
+- Redis
+- Celery worker
 
 Check the containers:
 
@@ -87,224 +78,280 @@ Check the containers:
 docker compose ps
 ```
 
-View logs:
-
-```powershell
-docker compose logs -f api
-```
-
-Stop the platform:
-
-```powershell
-docker compose down
-```
-
-Stop and remove local database/Redis volumes too:
-
-```powershell
-docker compose down -v
-```
-
-> `docker compose down -v` deletes local PostgreSQL data. Do not use it if you need to preserve your local data.
-
----
-
-## 🧩 Technology Stack
-
-- **Frontend:** Next.js + TypeScript
-- **Backend:** FastAPI + Python
-- **Database:** PostgreSQL + SQLAlchemy + Alembic
-- **Queue/cache:** Redis + Celery
-- **Telephony:** Twilio Voice Media Streams
-- **Realtime AI:** OpenAI Realtime
-- **Billing:** Stripe
-- **Containers:** Docker + Docker Compose
-- **Cloud foundation:** AWS + Terraform
-- **CI:** GitHub Actions
-
----
-
-## 🏗️ Architecture
-
-```text
-                    ┌──────────────────────┐
-                    │   Web Dashboard      │
-                    │   Next.js / TS       │
-                    └──────────┬───────────┘
-                               │ HTTPS
-                               ▼
-                    ┌──────────────────────┐
-                    │      FastAPI         │
-                    │ Auth / Tenants / API │
-                    └──────┬───────┬───────┘
-                           │       │
-                ┌──────────┘       └──────────┐
-                ▼                             ▼
-        ┌───────────────┐              ┌──────────────┐
-        │ PostgreSQL    │              │ Redis/Celery │
-        │ Application DB│              │ Async Jobs   │
-        └───────────────┘              └──────────────┘
-
-Twilio Phone
-     │
-     │ Voice + Media Stream
-     ▼
-┌───────────────┐       WebSocket       ┌─────────────────┐
-│ Twilio        │ ◄───────────────────► │ FastAPI Voice   │
-└───────────────┘                       │ Gateway         │
-                                        └────────┬────────┘
-                                                 │ Realtime WS
-                                                 ▼
-                                        ┌─────────────────┐
-                                        │ OpenAI Realtime │
-                                        │ Voice Model     │
-                                        └─────────────────┘
-```
-
----
-
-## ☎️ Enable Real AI Phone Calls
-
-The local application does **not** need Twilio/OpenAI credentials to boot. Add them only when you are ready to test real calls.
-
-### 1. Configure `.env`
-
-Set:
-
-```env
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_REALTIME_MODEL=gpt-realtime
-
-TWILIO_ACCOUNT_SID=your_twilio_account_sid
-TWILIO_AUTH_TOKEN=your_twilio_auth_token
-
-PUBLIC_BASE_URL=https://your-public-api-domain
-
-OUTBOUND_ENABLED=false
-RECORDING_MODE=DISABLED
-```
-
-Keep `OUTBOUND_ENABLED=false` until consent, compliance and provider configuration are verified.
-
-### 2. Restart the API
-
-```powershell
-docker compose up -d --build api celery
-```
-
-### 3. Expose the local API publicly
-
-Twilio needs a public **HTTPS** endpoint and the voice stream needs **WSS** support. For local development, use a secure tunneling solution that provides HTTPS/WSS and set `PUBLIC_BASE_URL` to that public origin.
-
-Example target:
-
-```text
-https://your-public-host
-```
-
-### 4. Configure Twilio
-
-Set the phone number's incoming Voice webhook to:
-
-```text
-https://your-public-host/api/v1/voice/twilio/inbound
-```
-
-The application then resolves the phone number to the configured tenant/agent and starts the realtime voice flow.
-
-### 5. Publish an agent
-
-Create/configure an agent, create its version, and publish the version before expecting a phone number to route to it.
-
----
-
-## 🔐 Environment Variables
-
-The complete environment template is in `.env.example`.
-
-Important values:
-
-| Variable | Purpose | Local first boot |
-|---|---|---|
-| `SECRET_KEY` | JWT/application signing secret | **Set a strong random value** |
-| `DATABASE_URL` | PostgreSQL connection | Already configured for Docker |
-| `REDIS_URL` | Redis connection | Already configured for Docker |
-| `OPENAI_API_KEY` | Realtime AI | Optional until voice testing |
-| `OPENAI_REALTIME_MODEL` | Realtime model | `gpt-realtime` |
-| `TWILIO_ACCOUNT_SID` | Twilio account | Optional until voice testing |
-| `TWILIO_AUTH_TOKEN` | Twilio authentication | Optional until voice testing |
-| `PUBLIC_BASE_URL` | Public API origin | Required for live Twilio calls |
-| `STRIPE_SECRET_KEY` | Stripe billing | Optional until billing testing |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook verification | Optional until billing testing |
-| `OUTBOUND_ENABLED` | Outbound calling safety gate | `false` |
-| `RECORDING_MODE` | Call recording mode | `DISABLED` |
-
-Generate a strong secret on Windows with:
-
-```powershell
-python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-Copy the result into `.env` as `SECRET_KEY`.
-
-**Never commit `.env` or production credentials to GitHub.**
-
----
-
-## 🧪 Development & Testing
-
-Run Python tests inside the API container:
-
-```powershell
-docker compose exec api pytest -q
-```
-
-Check the API health endpoint:
-
-```powershell
-curl.exe http://localhost:8000/health
-```
-
-Check readiness:
-
-```powershell
-curl.exe http://localhost:8000/ready
-```
-
-Run migrations:
+### 4. Run database migrations
 
 ```powershell
 docker compose exec api alembic upgrade head
 ```
 
-Check migration status:
+### 5. Verify the installation
+
+Open these in your browser:
+
+| Component | Address |
+|---|---|
+| **Web dashboard** | http://localhost:3000 |
+| **API** | http://localhost:8000 |
+| **API docs** | http://localhost:8000/docs |
+| **Health** | http://localhost:8000/health |
+| **Readiness** | http://localhost:8000/ready |
+
+Or verify from PowerShell:
 
 ```powershell
-docker compose exec api alembic current
+curl.exe http://localhost:8000/health
+curl.exe http://localhost:8000/ready
+```
+
+### ✅ Installation complete
+
+If the dashboard opens and `/health` returns successfully, the platform is running locally.
+
+---
+
+# 🚀 Daily Windows Commands
+
+After the initial installation, you normally only need:
+
+### Start
+
+```powershell
+docker compose up -d
+```
+
+### Start and rebuild after code changes
+
+```powershell
+docker compose up --build -d
+```
+
+### View running services
+
+```powershell
+docker compose ps
+```
+
+### View API logs
+
+```powershell
+docker compose logs -f api
+```
+
+### View all logs
+
+```powershell
+docker compose logs -f
+```
+
+### Run migrations
+
+```powershell
+docker compose exec api alembic upgrade head
+```
+
+### Run backend tests
+
+```powershell
+docker compose exec api pytest -q
+```
+
+### Stop services
+
+```powershell
+docker compose down
+```
+
+### Completely reset local data
+
+```powershell
+docker compose down -v
+docker compose up --build -d
+docker compose exec api alembic upgrade head
+```
+
+> ⚠️ `docker compose down -v` deletes the local PostgreSQL and Redis volumes. Use it only when you intentionally want a clean local environment.
+
+---
+
+# 📞 Enable Real AI Phone Calls
+
+The local application can boot without provider credentials. Real phone conversations require **OpenAI Realtime + Twilio + a public HTTPS/WSS endpoint**.
+
+## 1. Configure OpenAI
+
+Edit `.env`:
+
+```env
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_REALTIME_MODEL=gpt-realtime
+```
+
+## 2. Configure Twilio
+
+```env
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+```
+
+## 3. Configure the public API URL
+
+For local phone testing, your API must be reachable from the internet and support HTTPS/WSS.
+
+```env
+PUBLIC_BASE_URL=https://your-public-host
+```
+
+Do not use `http://localhost:8000` for the Twilio webhook.
+
+## 4. Configure the Twilio Voice webhook
+
+Set the Twilio phone number's incoming Voice webhook to:
+
+```text
+https://your-public-host/api/v1/voice/twilio/inbound
+```
+
+The application validates the Twilio request, resolves the phone number to the configured tenant/agent, creates the call, and starts the realtime voice stream.
+
+## 5. Publish an AI agent
+
+Before a phone number can route to an agent, configure the agent, create its version, and publish the version.
+
+## 6. Restart the voice services
+
+```powershell
+docker compose up -d --build api celery
+```
+
+### Outbound calling safety
+
+Keep this disabled while configuring and testing the platform:
+
+```env
+OUTBOUND_ENABLED=false
+```
+
+Only enable outbound calling after consent, compliance, phone-number configuration, provider configuration, and end-to-end testing have been verified.
+
+---
+
+# 🔐 Environment Configuration
+
+The full template is available in `.env.example`.
+
+| Variable | Purpose | Local setup |
+|---|---|---|
+| `APP_ENV` | Application environment | `development` |
+| `SECRET_KEY` | JWT/application signing secret | **Required** |
+| `DATABASE_URL` | PostgreSQL connection | Docker default |
+| `REDIS_URL` | Redis connection | Docker default |
+| `PUBLIC_BASE_URL` | Public API origin | Required for live calls |
+| `FRONTEND_URL` | Web application origin | `http://localhost:3000` |
+| `CORS_ORIGINS` | Allowed browser origins | `http://localhost:3000` |
+| `OPENAI_API_KEY` | OpenAI Realtime authentication | Required for AI calls |
+| `OPENAI_REALTIME_MODEL` | Realtime voice model | `gpt-realtime` |
+| `TWILIO_ACCOUNT_SID` | Twilio account | Required for phone calls |
+| `TWILIO_AUTH_TOKEN` | Twilio authentication | Required for phone calls |
+| `STRIPE_SECRET_KEY` | Stripe API | Required for billing |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook verification | Required for billing webhooks |
+| `AWS_REGION` | AWS region | Example: `ap-south-1` |
+| `S3_BUCKET` | Object storage bucket | Production configuration |
+| `OUTBOUND_ENABLED` | Outbound calling gate | `false` |
+| `RECORDING_MODE` | Recording policy | `DISABLED` |
+
+### Security rules
+
+**Never commit `.env`, API keys, access tokens, private keys, or production secrets to GitHub.**
+
+Use a managed secret store for production deployments.
+
+---
+
+# 🏗️ Architecture
+
+```text
+                         ┌───────────────────────┐
+                         │    Next.js Dashboard  │
+                         │       TypeScript      │
+                         └───────────┬───────────┘
+                                     │ HTTPS
+                                     ▼
+                         ┌───────────────────────┐
+                         │        FastAPI        │
+                         │ Auth / API / Voice    │
+                         └───────┬───────┬───────┘
+                                 │       │
+                  ┌──────────────┘       └──────────────┐
+                  ▼                                     ▼
+        ┌──────────────────┐                 ┌──────────────────┐
+        │   PostgreSQL     │                 │ Redis + Celery   │
+        │ Tenant data      │                 │ Async workloads  │
+        └──────────────────┘                 └──────────────────┘
+
+                           PHONE CALL
+                               │
+                               ▼
+                         ┌────────────┐
+                         │   Twilio   │
+                         │ Voice/Media│
+                         └─────┬──────┘
+                               │ WebSocket
+                               ▼
+                       ┌─────────────────┐
+                       │ FastAPI Voice   │
+                       │ Gateway         │
+                       └────────┬────────┘
+                                │ Realtime WS
+                                ▼
+                       ┌─────────────────┐
+                       │ OpenAI Realtime │
+                       │ Voice Runtime   │
+                       └─────────────────┘
 ```
 
 ---
 
-## 📁 Project Structure
+# 🧩 Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js + TypeScript |
+| API | FastAPI + Python |
+| Database | PostgreSQL + SQLAlchemy |
+| Migrations | Alembic |
+| Cache / Queue | Redis + Celery |
+| Telephony | Twilio Voice Media Streams |
+| Realtime AI | OpenAI Realtime |
+| Billing | Stripe |
+| Containers | Docker + Docker Compose |
+| Cloud foundation | AWS + Terraform |
+| CI | GitHub Actions |
+
+---
+
+# 📁 Project Structure
 
 ```text
 ai-calling-agent/
 ├── apps/
-│   ├── api/                  # FastAPI backend
+│   ├── api/
 │   │   ├── app/
-│   │   │   ├── api/          # REST + voice routes
-│   │   │   ├── core/         # Config + security
-│   │   │   ├── db/           # Database session/base
-│   │   │   ├── models/       # SQLAlchemy models
-│   │   │   ├── providers/    # Twilio/OpenAI integrations
-│   │   │   ├── services/     # Business logic
-│   │   │   └── workers/      # Celery jobs
-│   │   ├── alembic/          # Database migrations
-│   │   └── tests/            # Backend tests
-│   └── web/                  # Next.js dashboard
-├── docs/                     # Architecture, security, deployment, testing
-├── infrastructure/terraform/ # AWS/Terraform foundation
-├── scripts/                  # Utility scripts
+│   │   │   ├── api/             # REST and voice routes
+│   │   │   ├── core/            # Configuration and security
+│   │   │   ├── db/              # Database setup
+│   │   │   ├── models/          # SQLAlchemy models
+│   │   │   ├── providers/       # Twilio/OpenAI providers
+│   │   │   ├── services/        # Business logic
+│   │   │   └── workers/         # Celery workloads
+│   │   ├── alembic/             # Database migrations
+│   │   ├── tests/               # Backend tests
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   └── web/                     # Next.js dashboard
+├── docs/                        # Architecture/security/deployment docs
+├── infrastructure/terraform/   # AWS/Terraform foundation
+├── scripts/                     # Utility scripts
+├── .github/workflows/           # CI workflows
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
@@ -312,42 +359,70 @@ ai-calling-agent/
 
 ---
 
-## 🛠️ Common Windows Fixes
+# 🧪 Testing
 
-### Docker is not recognized
+Run the backend test suite inside Docker:
 
-Install and start Docker Desktop, then reopen PowerShell:
+```powershell
+docker compose exec api pytest -q
+```
+
+Check migration state:
+
+```powershell
+docker compose exec api alembic current
+```
+
+Apply all migrations:
+
+```powershell
+docker compose exec api alembic upgrade head
+```
+
+Check the API:
+
+```powershell
+curl.exe http://localhost:8000/health
+```
+
+---
+
+# 🛠️ Windows Troubleshooting
+
+## Docker command not found
+
+Install and start Docker Desktop, then reopen PowerShell.
 
 ```powershell
 docker --version
 docker compose version
 ```
 
-### Port 3000 or 8000 is already in use
-
-Find the process using the port:
+## Port 3000 is already in use
 
 ```powershell
 netstat -ano | findstr :3000
+```
+
+## Port 8000 is already in use
+
+```powershell
 netstat -ano | findstr :8000
 ```
 
-Stop the conflicting process or change the exposed port in `docker-compose.yml`.
+Stop the conflicting process or change the published port in `docker-compose.yml`.
 
-### API container keeps restarting
-
-View the error:
+## API container is restarting
 
 ```powershell
 docker compose logs --tail=200 api
 ```
 
-### Database connection error
-
-Make sure PostgreSQL is running:
+## PostgreSQL is unavailable
 
 ```powershell
 docker compose ps postgres
+docker compose logs --tail=100 postgres
 ```
 
 Then restart:
@@ -356,7 +431,20 @@ Then restart:
 docker compose restart postgres api
 ```
 
-### Fresh local reset
+## Redis is unavailable
+
+```powershell
+docker compose ps redis
+docker compose logs --tail=100 redis
+```
+
+Then:
+
+```powershell
+docker compose restart redis celery api
+```
+
+## Need a completely clean installation
 
 ```powershell
 docker compose down -v
@@ -364,68 +452,130 @@ docker compose up --build -d
 docker compose exec api alembic upgrade head
 ```
 
-Again, `-v` removes local database data.
+---
+
+# 🔒 Security & Compliance
+
+The platform includes a production-oriented foundation for:
+
+- Multi-tenant data isolation
+- Authentication and RBAC
+- Agent/version management
+- API key authentication
+- Audit logging
+- Twilio signature validation
+- Consent and compliance records
+- Outbound calling safety controls
+- Usage accounting
+- Billing webhook foundation
+- Request IDs and health/readiness endpoints
+
+Before production launch, additionally configure and validate:
+
+- HTTPS/WSS
+- Production secret management
+- Database backups and recovery
+- Data retention policies
+- Monitoring and alerting
+- Rate limiting at the distributed edge
+- Provider credentials and webhooks
+- Calling consent and applicable telecommunications laws
+- Recording/retention policies
+- Production AWS infrastructure
+- End-to-end voice testing
 
 ---
 
-## 🔒 Security
+# ☁️ Production Deployment
 
-This platform is designed as a production-oriented foundation with tenant isolation, RBAC, authentication, audit logging, provider signature validation, compliance controls and usage accounting.
+The repository contains an AWS/Terraform foundation and deployment documentation.
 
-Before production:
-
-- Use a strong production `SECRET_KEY`.
-- Store secrets in a proper secret manager.
-- Enable HTTPS/WSS everywhere.
-- Validate Twilio signatures.
-- Keep tenant data isolated.
-- Verify call consent and applicable calling laws.
-- Keep outbound calling disabled until compliance is configured.
-- Configure production database backups and retention.
-- Configure monitoring, alerting and log retention.
-- Perform end-to-end Twilio/OpenAI testing with production-like credentials.
-
----
-
-## 📊 Current Release Status
-
-The repository contains the core production-oriented platform foundation, including the API, tenant/RBAC model, versioned agents, voice gateway, Twilio/OpenAI realtime integration, database migrations, Redis/Celery foundation, dashboard, billing foundation, CI and AWS/Terraform foundation.
-
-**It is not yet a claim of full production readiness.** Live provider credentials, public WSS infrastructure, production AWS configuration, billing setup, compliance verification, end-to-end testing and remaining hardening work are required before a production launch.
+Production deployment should **not** be treated as `docker compose up` on a public server. A proper deployment should include secure networking, secret management, TLS, persistent PostgreSQL, Redis strategy, scalable workers, observability, backups, deployment automation, and provider webhook configuration.
 
 See:
 
-- `docs/IMPLEMENTATION_STATUS.md`
-- `docs/ARCHITECTURE.md`
+- `docs/DEPLOYMENT.md`
 - `docs/SECURITY.md`
+- `docs/ARCHITECTURE.md`
 - `docs/TELEPHONY.md`
 - `docs/AI_RUNTIME.md`
-- `docs/DEPLOYMENT.md`
 - `docs/COMPLIANCE.md`
 - `docs/TESTING.md`
+- `docs/IMPLEMENTATION_STATUS.md`
 
 ---
 
-## 🆘 Recommended First Run
+# 📌 Current Release Status
 
-If you are setting this up on a Windows PC for the first time, follow exactly these commands:
+This repository is a **production-oriented platform foundation**, not a declaration that every production requirement has been completed.
+
+Core areas include the API, multi-tenancy, RBAC, versioned agents, calls, contacts, knowledge, appointments, campaigns, human-agent records, Twilio voice integration, OpenAI Realtime integration, PostgreSQL/Alembic, Redis/Celery, dashboard, billing foundation, CI, and AWS/Terraform foundation.
+
+Remaining production work includes provider credential validation, public WSS infrastructure, full end-to-end testing, production AWS configuration, complete outbound orchestration, remaining integrations, operational hardening, monitoring, retention, and compliance verification.
+
+The authoritative implementation checklist is:
+
+```text
+docs/IMPLEMENTATION_STATUS.md
+```
+
+---
+
+# 🤝 Development Workflow
+
+Recommended workflow:
+
+```powershell
+# Get the latest code
+git pull origin main
+
+# Rebuild local services
+docker compose up --build -d
+
+# Apply migrations
+docker compose exec api alembic upgrade head
+
+# Run tests
+docker compose exec api pytest -q
+
+# Inspect status
+docker compose ps
+```
+
+Before pushing changes:
+
+1. Run the backend tests.
+2. Verify migrations.
+3. Check API health/readiness.
+4. Test affected endpoints.
+5. Never commit secrets.
+6. Review the GitHub Actions result.
+
+---
+
+# 📄 License
+
+A project license should be added before public distribution.
+
+---
+
+## 🚀 Quick Reference
+
+For a fresh Windows machine:
 
 ```powershell
 git clone https://github.com/Venkatnaidu7/ai-calling-agent.git
 cd ai-calling-agent
 Copy-Item .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
+# Put the generated value into .env as SECRET_KEY
 
-Put the generated value into `.env` as `SECRET_KEY`, then run:
-
-```powershell
 docker compose up --build -d
 docker compose exec api alembic upgrade head
 docker compose ps
 ```
 
-Finally open:
+Then open:
 
 ```text
 http://localhost:3000
@@ -433,10 +583,4 @@ http://localhost:8000/docs
 http://localhost:8000/health
 ```
 
-**Once these three endpoints work, the platform is successfully running locally.**
-
----
-
-## License
-
-Add the project's license before public distribution.
+**Local platform setup is complete when the services are healthy and the API health endpoint responds successfully.**
