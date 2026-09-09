@@ -14,6 +14,7 @@ def valid_stream_token(call_id,token):return hmac.compare_digest(stream_token(ca
 async def inbound(request:Request,db:AsyncSession=Depends(__import__('app.db.session',fromlist=['get_db']).get_db)):
     form=dict(await request.form());validate_twilio(request,form);to=form.get('To');pn=await db.scalar(select(PhoneNumber).where(PhoneNumber.e164==to,PhoneNumber.active==True))
     if not pn:raise HTTPException(404,'Phone number not configured')
+    if not (pn.capabilities or {}).get('inbound',True):raise HTTPException(403,'Inbound calling is disabled for this phone number')
     agent=await db.scalar(select(Agent).where(Agent.id==pn.agent_id,Agent.tenant_id==pn.tenant_id,Agent.active==True))
     if not agent or not agent.active_version_id:raise HTTPException(503,'Agent unavailable')
     v=await db.scalar(select(AgentVersion).where(AgentVersion.id==agent.active_version_id,AgentVersion.tenant_id==pn.tenant_id,AgentVersion.status=='PUBLISHED'))
