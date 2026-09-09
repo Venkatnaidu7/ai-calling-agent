@@ -4,7 +4,7 @@ from sqlalchemy import select,func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.api.deps import tenant_id
-from app.models import Call,Contact,PhoneNumber,Agent
+from app.models import Call,Contact,PhoneNumber
 from app.services.compliance import check_outbound
 from app.core.config import get_settings
 from twilio.rest import Client
@@ -32,6 +32,19 @@ async def get_call(call_id:UUID,t=Depends(tenant_id),db:AsyncSession=Depends(get
     x=await db.scalar(select(Call).where(Call.id==call_id,Call.tenant_id==UUID(t)))
     if not x:raise HTTPException(404,'Call not found')
     return x
+
+@router.post('/{call_id}/hangup')
+async def hangup(call_id:UUID,t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):
+    s=get_settings(); x=await db.scalar(select(Call).where(Call.id==call_id,Call.tenant_id==UUID(t)))
+    if not x: raise HTTPException(404,'Call not found')
+    if x.status not in {'QUEUED','RINGING','IN_PROGRESS'}: raise HTTPException(409,'Call is not active')
+    if not x.provider_call_id: raise HTTPException(409,'Provider call is not connected')
+    if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503,'Twilio is not configured')
+    try:
+        Client(s.twilio_account_sid,s.twilio_auth_token).calls(x.provider_call_id).update(status='completed')
+    except Exception as exc:
+        raise HTTPException(502,f'Unable to terminate provider call: {exc}')
+    x.status='COMPLETED'; await db.commit(); return {'call_id':str(x.id),'status':x.status}
 
 @router.post('/outbound')
 async def outbound(contact_id:UUID,phone_number_id:UUID,t=Depends(tenant_id),db:AsyncSession=Depends(get_db)):
