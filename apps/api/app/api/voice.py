@@ -16,7 +16,7 @@ from app.providers.twilio import connect_stream_xml, validate_twilio, validate_t
 
 router = APIRouter(tags=['voice'])
 
-STATUS_MAP = {'queued': 'QUEUED', 'initiated': 'QUEUED', 'ringing': 'RINGING', 'in-progress': 'IN_PROGRESS', 'completed': 'COMPLETED', 'busy': 'BUSY', 'no-answer': 'NO_ANSWER', 'failed': 'FAILED', 'canceled': 'FAILED'}
+STATUS_MAP = {'queued': 'QUEUED', 'initiated': 'QUEUED', 'ringing': 'RINGING', 'answered': 'IN_PROGRESS', 'in-progress': 'IN_PROGRESS', 'completed': 'COMPLETED', 'busy': 'BUSY', 'no-answer': 'NO_ANSWER', 'failed': 'FAILED', 'canceled': 'FAILED'}
 
 
 def stream_token(call_id):
@@ -117,28 +117,34 @@ async def stream(websocket: WebSocket, call_id: uuid.UUID, token: str | None = N
         async with SessionLocal() as db:
             call = await db.scalar(select(Call).where(Call.id == call_id))
             if not call: await websocket.close(code=1008); return
-            version = await db.scalar(select(AgentVersion).where(AgentVersion.id == call.agent_version_id, AgentVersion.tenant_id == call.tenant_id))
+            version = await db.scalar(select(AgentVersion).where(AgentVersion.id == call.agent_version_id, AgentVersion.tenant_id == call.tenant_id, AgentVersion.status == 'PUBLISHED'))
         if not version:
             await websocket.close(code=1011); return
-        s = get_settings()
-        if s.openai_api_key:
-            bridge = RealtimeBridge(version.system_instructions, version.voice, version.language)
-            await bridge.connect()
+        settings = get_settings()
+        if not settings.openai_api_key:
+            await websocket.close(code=1011); return
 
-            async def ai_loop():
-                async for event in bridge.events():
-                    if event.get('type') in {'response.output_audio.delta', 'response.audio.delta'} and stream_sid and event.get('delta'):
-                        await websocket.send_text(json.dumps({'event': 'media', 'streamSid': stream_sid, 'media': {'payload': event['delta']}}))
-                    elif event.get('type') == 'input_audio_buffer.speech_started':
-                        await bridge.cancel()
+        bridge = RealtimeBridge(version.system_instructions, version.voice, version.language)
+        await bridge.connect()
+
+        async def ai_loop():
+            async for event in bridge.events():
+                event_type = event.get('type')
+                if event_type in {'response.output_audio.delta', 'response.audio.delta'} and stream_sid and event.get('delta'):
+                    await websocket.send_text(json.dumps({'event': 'media', 'streamSid': stream_sid, 'media': {'payload': event['delta']}}))
+                elif event_type == 'input_audio_buffer.speech_started':
+                    await bridge.cancel()
+                elif event_type == 'error':
+                    raise RuntimeError(event.get('error', {}).get('message', 'OpenAI Realtime error'))
 
         while True:
             message = json.loads(await websocket.receive_text())
             event_type = message.get('event')
             if event_type == 'start':
                 stream_sid = message['start']['streamSid']
-                if bridge: task = asyncio.create_task(ai_loop())
-            elif event_type == 'media' and bridge:
+                task = asyncio.create_task(ai_loop())
+                await bridge.create_response()
+            elif event_type == 'media':
                 await bridge.send_audio(message['media']['payload'])
             elif event_type == 'stop':
                 break
