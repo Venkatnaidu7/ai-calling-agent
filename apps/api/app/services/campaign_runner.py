@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from uuid import UUID
 from sqlalchemy import select
 from twilio.rest import Client
@@ -9,6 +10,16 @@ from app.models import Agent, AgentVersion, Call, Campaign, CampaignAttempt, Cam
 from app.services.compliance import check_outbound
 
 
+def scheduled_start(schedule):
+    value = (schedule or {}).get('start_at')
+    if not value: return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 async def run_campaign(campaign_id: str, tenant_id: str):
     s = get_settings()
     if not s.outbound_enabled or not s.twilio_account_sid or not s.twilio_auth_token:
@@ -16,7 +27,12 @@ async def run_campaign(campaign_id: str, tenant_id: str):
     tid, cid = UUID(tenant_id), UUID(campaign_id)
     async with SessionLocal() as db:
         campaign = await db.scalar(select(Campaign).where(Campaign.id == cid, Campaign.tenant_id == tid))
-        if not campaign or campaign.status != 'ACTIVE': return {'status': 'stopped'}
+        if not campaign or campaign.status not in {'ACTIVE', 'SCHEDULED'}: return {'status': 'stopped'}
+        start_at = scheduled_start(campaign.schedule)
+        now = datetime.now(timezone.utc)
+        if start_at and now < start_at:
+            return {'status': 'scheduled', 'delay_seconds': int((start_at - now).total_seconds())}
+        if campaign.status == 'SCHEDULED': campaign.status = 'ACTIVE'
         phone_id = (campaign.schedule or {}).get('phone_number_id')
         if not phone_id: return {'status': 'blocked', 'reason': 'PHONE_NUMBER_REQUIRED'}
         pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == UUID(phone_id), PhoneNumber.tenant_id == tid, PhoneNumber.active == True))
@@ -26,12 +42,16 @@ async def run_campaign(campaign_id: str, tenant_id: str):
         version = await db.scalar(select(AgentVersion).where(AgentVersion.id == agent.active_version_id, AgentVersion.agent_id == agent.id, AgentVersion.tenant_id == tid, AgentVersion.status == 'PUBLISHED'))
         if not version: return {'status': 'blocked', 'reason': 'AGENT_NOT_PUBLISHED'}
         rows = (await db.scalars(select(CampaignContact).where(CampaignContact.campaign_id == cid, CampaignContact.tenant_id == tid, CampaignContact.state.in_(['QUEUED', 'RETRY'])).order_by(CampaignContact.created_at.asc()).limit(campaign.concurrency))).all()
+        if not rows:
+            active = await db.scalar(select(CampaignContact.id).where(CampaignContact.campaign_id == cid, CampaignContact.tenant_id == tid, CampaignContact.state == 'IN_PROGRESS').limit(1))
+            if not active: campaign.status = 'COMPLETED'
+            await db.commit()
+            return {'status': 'complete' if campaign.status == 'COMPLETED' else 'waiting', 'launched': 0}
         client = Client(s.twilio_account_sid, s.twilio_auth_token)
         launched = 0
         for item in rows:
             contact = await db.scalar(select(Contact).where(Contact.id == item.contact_id, Contact.tenant_id == tid))
-            if not contact or not contact.phone:
-                item.state = 'FAILED'; continue
+            if not contact or not contact.phone: item.state = 'FAILED'; continue
             gate, reason = await check_outbound(db, tid, contact.id)
             if gate != 'ALLOWED':
                 item.state = 'FAILED'; db.add(CampaignAttempt(tenant_id=tid, campaign_id=cid, contact_id=contact.id, state='BLOCKED', error_code=reason)); continue
