@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_region: str = 'us1'
+    plivo_auth_id: str | None = None
+    plivo_auth_token: str | None = None
     openai_api_key: str | None = None
     openai_realtime_model: str = 'gpt-realtime-2.1'
     openai_realtime_url: str = 'wss://api.openai.com/v1/realtime'
