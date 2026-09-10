@@ -10,7 +10,7 @@ type Summary = { summary: string; intent: string; outcome: string; sentiment: st
 type Action = { id: string; description: string; owner: string | null; due_date: string | null; status: string }
 type Intelligence = { call_id: string; transcript: { status: string; segments: Segment[] }; summary: Summary | null; action_items: Action[] }
 
-a function formatTime(value: string | null) {
+function formatTime(value: string | null) {
   if (!value) return ''
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })
