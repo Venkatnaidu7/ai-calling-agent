@@ -3,12 +3,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from twilio.rest import Client
+from plivo import RestClient as PlivoClient
 
 from app.db.session import get_db
 from app.api.deps import tenant_id
 from app.models import Agent, AgentVersion, Call, Contact, PhoneNumber
 from app.services.compliance import check_outbound
 from app.core.config import get_settings
+from app.providers.plivo import public_url as plivo_public_url
 
 router = APIRouter(prefix='/calls', tags=['calls'])
 
@@ -20,10 +22,17 @@ def twilio_client() -> Client:
     return Client(s.twilio_account_sid, s.twilio_auth_token)
 
 
+def plivo_client() -> PlivoClient:
+    s = get_settings()
+    if not s.plivo_auth_id or not s.plivo_auth_token:
+        raise HTTPException(503, 'Plivo is not configured')
+    return PlivoClient(s.plivo_auth_id, s.plivo_auth_token)
+
+
 def public_url(path: str) -> str:
     base = get_settings().public_base_url.rstrip('/')
     if not base.startswith('https://'):
-        raise HTTPException(503, 'public_base_url must use HTTPS for Twilio voice webhooks')
+        raise HTTPException(503, 'public_base_url must use HTTPS for voice webhooks')
     return f'{base}{path}'
 
 
@@ -60,7 +69,10 @@ async def hangup(call_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depends
     if x.status not in {'QUEUED', 'RINGING', 'IN_PROGRESS'}: raise HTTPException(409, 'Call is not active')
     if not x.provider_call_id: raise HTTPException(409, 'Provider call is not connected')
     try:
-        twilio_client().calls(x.provider_call_id).update(status='completed')
+        if (await db.scalar(select(PhoneNumber.provider).where(PhoneNumber.id == x.phone_number_id))) == 'plivo':
+            plivo_client().calls.delete(call_uuid=x.provider_call_id)
+        else:
+            twilio_client().calls(x.provider_call_id).update(status='completed')
     except Exception as exc:
         raise HTTPException(502, f'Unable to terminate provider call: {exc}')
     x.status = 'COMPLETED'; await db.commit()
@@ -75,6 +87,8 @@ async def outbound(contact_id: UUID, phone_number_id: UUID, t=Depends(tenant_id)
     c = await db.scalar(select(Contact).where(Contact.id == contact_id, Contact.tenant_id == tid))
     pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == phone_number_id, PhoneNumber.tenant_id == tid))
     if not c or not pn: raise HTTPException(404, 'Contact or phone number not found')
+    provider = (pn.provider or 'twilio').lower()
+    if provider not in {'twilio', 'plivo'}: raise HTTPException(400, f'Unsupported voice provider: {provider}')
     if not pn.active or not (pn.capabilities or {}).get('outbound', True): raise HTTPException(403, 'Outbound calling is disabled for this phone number')
     gate, reason = await check_outbound(db, tid, contact_id)
     if gate != 'ALLOWED': raise HTTPException(403, reason)
@@ -83,17 +97,35 @@ async def outbound(contact_id: UUID, phone_number_id: UUID, t=Depends(tenant_id)
     if not agent or not agent.active_version_id: raise HTTPException(409, 'Phone number agent has no active published version')
     version = await db.scalar(select(AgentVersion).where(AgentVersion.id == agent.active_version_id, AgentVersion.agent_id == agent.id, AgentVersion.tenant_id == tid, AgentVersion.status == 'PUBLISHED'))
     if not version: raise HTTPException(409, 'Phone number agent has no published version')
-    if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
     call = Call(tenant_id=tid, phone_number_id=pn.id, agent_id=agent.id, agent_version_id=version.id, contact_id=c.id, direction='OUTBOUND', from_number=pn.e164, to_number=c.phone, status='QUEUED')
     db.add(call); await db.flush()
-    url = public_url(f'/api/v1/voice/twilio/outbound/{call.id}')
-    status_url = public_url('/api/v1/voice/twilio/status')
     try:
-        tw = twilio_client().calls.create(to=c.phone, from_=pn.e164, url=url, method='POST', status_callback=status_url, status_callback_method='POST', status_callback_event=['initiated', 'ringing', 'answered', 'completed'])
+        if provider == 'plivo':
+            result = plivo_client().calls.create(
+                from_=pn.e164,
+                to_=c.phone,
+                answer_url=public_url(f'/api/v1/voice/plivo/outbound/{call.id}'),
+                answer_method='POST',
+                ring_url=public_url('/api/v1/voice/plivo/ring'),
+                ring_method='POST',
+                hangup_url=public_url('/api/v1/voice/plivo/status'),
+                hangup_method='POST',
+            )
+            request_uuid = getattr(result, 'request_uuid', None) or (result.get('request_uuid') if isinstance(result, dict) else None)
+            if not request_uuid: raise RuntimeError('Plivo did not return a request UUID')
+            call.provider_call_id = request_uuid
+            call.status = 'RINGING'
+        else:
+            if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
+            url = public_url(f'/api/v1/voice/twilio/outbound/{call.id}')
+            status_url = public_url('/api/v1/voice/twilio/status')
+            tw = twilio_client().calls.create(to=c.phone, from_=pn.e164, url=url, method='POST', status_callback=status_url, status_callback_method='POST', status_callback_event=['initiated', 'ringing', 'answered', 'completed'])
+            call.provider_call_id = tw.sid
+            call.status = 'RINGING'
+    except HTTPException:
+        await db.rollback(); raise
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(502, f'Unable to start Twilio call: {exc}')
-    call.provider_call_id = tw.sid
-    call.status = 'RINGING'
+        raise HTTPException(502, f'Unable to start {provider} call: {exc}')
     await db.commit()
-    return {'call_id': str(call.id), 'provider_call_id': tw.sid, 'status': call.status}
+    return {'call_id': str(call.id), 'provider_call_id': call.provider_call_id, 'provider': provider, 'status': call.status}
