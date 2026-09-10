@@ -10,13 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
-from app.models import Agent, AgentVersion, Call, Contact, PhoneNumber
+from app.models import Agent, AgentVersion, Call, Campaign, CampaignAttempt, CampaignContact, Contact, PhoneNumber
 from app.providers.openai_realtime import RealtimeBridge
 from app.providers.twilio import connect_stream_xml, validate_twilio, validate_twilio_ws
 
 router = APIRouter(tags=['voice'])
 
 STATUS_MAP = {'queued': 'QUEUED', 'initiated': 'QUEUED', 'ringing': 'RINGING', 'answered': 'IN_PROGRESS', 'in-progress': 'IN_PROGRESS', 'completed': 'COMPLETED', 'busy': 'BUSY', 'no-answer': 'NO_ANSWER', 'failed': 'FAILED', 'canceled': 'FAILED'}
+TERMINAL_CALL_STATES = {'COMPLETED', 'BUSY', 'NO_ANSWER', 'FAILED'}
+RETRYABLE_CALL_STATES = {'BUSY', 'NO_ANSWER', 'FAILED'}
 
 
 def stream_token(call_id):
@@ -90,14 +92,41 @@ async def status(request: Request, db: AsyncSession = Depends(get_db)):
     validate_twilio(request, form)
     call = await db.scalar(select(Call).where(Call.provider_call_id == form.get('CallSid')))
     if not call: return {'ok': True}
-    call.status = STATUS_MAP.get((form.get('CallStatus') or '').lower(), call.status)
+    new_status = STATUS_MAP.get((form.get('CallStatus') or '').lower(), call.status)
+    was_terminal = call.status in TERMINAL_CALL_STATES
+    call.status = new_status
     if form.get('CallDuration'):
         try: call.duration_seconds = int(form['CallDuration'])
         except ValueError: pass
     if form.get('RecordingUrl'): call.recording_url = form['RecordingUrl']
-    if call.status in {'COMPLETED', 'BUSY', 'NO_ANSWER', 'FAILED'}:
+    if new_status in TERMINAL_CALL_STATES:
         call.ended_at = datetime.now(timezone.utc)
+
+    should_continue = False
+    if call.direction == 'OUTBOUND' and new_status in TERMINAL_CALL_STATES and not was_terminal:
+        attempt = await db.scalar(select(CampaignAttempt).where(CampaignAttempt.call_id == call.id).order_by(CampaignAttempt.created_at.desc()))
+        if attempt:
+            campaign = await db.scalar(select(Campaign).where(Campaign.id == attempt.campaign_id, Campaign.tenant_id == call.tenant_id))
+            item = await db.scalar(select(CampaignContact).where(CampaignContact.campaign_id == attempt.campaign_id, CampaignContact.contact_id == attempt.contact_id, CampaignContact.tenant_id == call.tenant_id))
+            if campaign and item:
+                max_attempts = int((campaign.retry_policy or {}).get('max_attempts', 3))
+                if new_status == 'COMPLETED':
+                    item.state = 'COMPLETED'; attempt.state = 'COMPLETED'
+                elif new_status in RETRYABLE_CALL_STATES and item.attempts < max_attempts:
+                    item.state = 'RETRY'; attempt.state = 'RETRY'; attempt.error_code = new_status
+                else:
+                    item.state = 'FAILED'; attempt.state = 'FAILED'; attempt.error_code = new_status
+                queued = await db.scalar(select(CampaignContact.id).where(CampaignContact.campaign_id == campaign.id, CampaignContact.tenant_id == call.tenant_id, CampaignContact.state.in_(['QUEUED', 'RETRY'])).limit(1))
+                in_progress = await db.scalar(select(CampaignContact.id).where(CampaignContact.campaign_id == campaign.id, CampaignContact.tenant_id == call.tenant_id, CampaignContact.state == 'IN_PROGRESS').limit(1))
+                if not queued and not in_progress:
+                    campaign.status = 'COMPLETED'
+                else:
+                    should_continue = campaign.status == 'ACTIVE'
     await db.commit()
+    if should_continue:
+        from app.workers.tasks import process_campaign
+        retry_delay = int((attempt.campaign.retry_policy if attempt else {}).get('backoff_minutes', 0) * 60) if False else 0
+        process_campaign.apply_async(args=[str(attempt.campaign_id), str(call.tenant_id)], countdown=retry_delay)
     return {'ok': True}
 
 
