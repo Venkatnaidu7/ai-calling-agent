@@ -1,7 +1,5 @@
 from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 class Settings(BaseSettings):
     app_name: str = 'ai-voice-platform'
@@ -20,6 +18,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_realtime_model: str = 'gpt-realtime-2.1'
     openai_realtime_url: str = 'wss://api.openai.com/v1/realtime'
+    openai_intelligence_model: str = 'gpt-5.6-luna'
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
     aws_region: str = 'ap-south-1'
@@ -28,9 +27,8 @@ class Settings(BaseSettings):
     max_call_duration_seconds: int = 3600
     outbound_enabled: bool = False
     recording_mode: str = 'DISABLED'
-
+    intelligence_enabled: bool = True
     model_config = SettingsConfigDict(env_file='.env', extra='ignore', case_sensitive=False)
-
 
 @lru_cache
 def get_settings():
