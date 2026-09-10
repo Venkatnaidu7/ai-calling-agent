@@ -4,8 +4,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import tenant_id
+from app.core.config import get_settings
 from app.db.session import get_db
-from app.models import Campaign, CampaignAttempt, CampaignContact, Contact, PhoneNumber
+from app.models import Campaign, CampaignContact, Contact, PhoneNumber
 from app.schemas.campaign import CampaignContactAdd, CampaignContactOut, CampaignCreate, CampaignOut, CampaignStats, CampaignUpdate
 from app.workers.tasks import process_campaign
 
@@ -27,7 +28,7 @@ def phone_id(campaign: Campaign) -> UUID | None:
     value = (campaign.schedule or {}).get('phone_number_id')
     try:
         return UUID(str(value)) if value else None
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
@@ -51,46 +52,7 @@ async def create_campaign(data: CampaignCreate, t=Depends(tenant_id), db: AsyncS
     return as_campaign(x)
 
 
-@router.get('/{campaign_id}', response_model=CampaignOut)
-async def get_campaign_endpoint(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
-    return as_campaign(await get_campaign(campaign_id, t, db))
-
-
-@router.patch('/{campaign_id}', response_model=CampaignOut)
-async def update_campaign(campaign_id: UUID, data: CampaignUpdate, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
-    x = await get_campaign(campaign_id, t, db)
-    if x.status == 'ACTIVE':
-        raise HTTPException(409, 'Pause the campaign before editing it')
-    changes = data.model_dump(exclude_unset=True)
-    if 'phone_number_id' in changes:
-        pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == changes['phone_number_id'], PhoneNumber.tenant_id == UUID(t)))
-        if not pn: raise HTTPException(404, 'Phone number not found')
-        schedule = dict(x.schedule or {}); schedule['phone_number_id'] = str(changes.pop('phone_number_id')); changes['schedule'] = schedule
-    for k, v in changes.items(): setattr(x, k, v)
-    await db.commit(); await db.refresh(x)
-    return as_campaign(x)
-
-
-@router.post('/{campaign_id}/contacts', response_model=list[CampaignContactOut])
-async def add_contacts(campaign_id: UUID, data: CampaignContactAdd, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
-    x = await get_campaign(campaign_id, t, db)
-    if x.status == 'ACTIVE': raise HTTPException(409, 'Pause the campaign before changing contacts')
-    tid = UUID(t)
-    contacts = (await db.scalars(select(Contact).where(Contact.id.in_(data.contact_ids), Contact.tenant_id == tid))).all()
-    found = {c.id for c in contacts}
-    missing = [str(cid) for cid in data.contact_ids if cid not in found]
-    if missing: raise HTTPException(404, f'Contacts not found: {", ".join(missing)}')
-    existing = set((await db.scalars(select(CampaignContact.contact_id).where(CampaignContact.campaign_id == x.id, CampaignContact.contact_id.in_(data.contact_ids)))).all())
-    added = []
-    for c in contacts:
-        if c.id in existing: continue
-        item = CampaignContact(tenant_id=tid, campaign_id=x.id, contact_id=c.id, state='QUEUED', attempts=0)
-        db.add(item); added.append(item)
-    await db.commit()
-    for item in added: await db.refresh(item)
-    return [CampaignContactOut.model_validate(i) for i in added]
-
-
+# Static sub-routes must be declared before /{campaign_id}.
 @router.get('/{campaign_id}/contacts', response_model=list[CampaignContactOut])
 async def list_contacts(campaign_id: UUID, state: str | None = Query(None, max_length=30), t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
     x = await get_campaign(campaign_id, t, db)
@@ -109,9 +71,11 @@ async def campaign_stats(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSessi
 
 @router.post('/{campaign_id}/start', response_model=CampaignOut)
 async def start_campaign(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
-    x = await get_campaign(campaign_id, t, db)
+    x = await get_campaign(campaign_id, t, db); s = get_settings()
     if x.status == 'ACTIVE': return as_campaign(x)
     if not phone_id(x): raise HTTPException(409, 'Campaign has no phone number')
+    if not s.outbound_enabled: raise HTTPException(403, 'Outbound calling is disabled')
+    if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
     count = await db.scalar(select(func.count(CampaignContact.id)).where(CampaignContact.campaign_id == x.id, CampaignContact.state.in_(['QUEUED', 'RETRY']))) or 0
     if count == 0: raise HTTPException(409, 'Campaign has no callable contacts queued')
     x.status = 'ACTIVE'; await db.commit(); await db.refresh(x)
@@ -134,3 +98,40 @@ async def resume_campaign(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSess
     x.status = 'ACTIVE'; await db.commit(); await db.refresh(x)
     process_campaign.delay(str(x.id), t)
     return as_campaign(x)
+
+
+@router.get('/{campaign_id}', response_model=CampaignOut)
+async def get_campaign_endpoint(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
+    return as_campaign(await get_campaign(campaign_id, t, db))
+
+
+@router.patch('/{campaign_id}', response_model=CampaignOut)
+async def update_campaign(campaign_id: UUID, data: CampaignUpdate, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
+    x = await get_campaign(campaign_id, t, db)
+    if x.status == 'ACTIVE': raise HTTPException(409, 'Pause the campaign before editing it')
+    changes = data.model_dump(exclude_unset=True)
+    if 'phone_number_id' in changes:
+        pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == changes['phone_number_id'], PhoneNumber.tenant_id == UUID(t)))
+        if not pn: raise HTTPException(404, 'Phone number not found')
+        schedule = dict(x.schedule or {}); schedule['phone_number_id'] = str(changes.pop('phone_number_id')); changes['schedule'] = schedule
+    for k, v in changes.items(): setattr(x, k, v)
+    await db.commit(); await db.refresh(x)
+    return as_campaign(x)
+
+
+@router.post('/{campaign_id}/contacts', response_model=list[CampaignContactOut])
+async def add_contacts(campaign_id: UUID, data: CampaignContactAdd, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
+    x = await get_campaign(campaign_id, t, db)
+    if x.status == 'ACTIVE': raise HTTPException(409, 'Pause the campaign before changing contacts')
+    tid = UUID(t)
+    contacts = (await db.scalars(select(Contact).where(Contact.id.in_(data.contact_ids), Contact.tenant_id == tid))).all()
+    found = {c.id for c in contacts}; missing = [str(cid) for cid in data.contact_ids if cid not in found]
+    if missing: raise HTTPException(404, f'Contacts not found: {", ".join(missing)}')
+    existing = set((await db.scalars(select(CampaignContact.contact_id).where(CampaignContact.campaign_id == x.id, CampaignContact.contact_id.in_(data.contact_ids)))).all())
+    added = []
+    for c in contacts:
+        if c.id in existing: continue
+        item = CampaignContact(tenant_id=tid, campaign_id=x.id, contact_id=c.id, state='QUEUED', attempts=0); db.add(item); added.append(item)
+    await db.commit()
+    for item in added: await db.refresh(item)
+    return [CampaignContactOut.model_validate(i) for i in added]
