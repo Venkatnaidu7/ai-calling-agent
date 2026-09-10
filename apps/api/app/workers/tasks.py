@@ -16,10 +16,11 @@ def process_call_summary(self, call_id: str):
 def process_campaign(self, campaign_id: str, tenant_id: str):
     try:
         result = run_campaign_sync(campaign_id, tenant_id)
-        if result.get('status') == 'ok':
-            launched = int(result.get('launched', 0))
-            delay = 15 if launched else 60
-            self.apply_async(args=[campaign_id, tenant_id], countdown=delay)
+        state = result.get('status')
+        if state == 'scheduled':
+            self.apply_async(args=[campaign_id, tenant_id], countdown=max(1, int(result.get('delay_seconds', 60))))
+        elif state == 'ok' and int(result.get('launched', 0)) > 0:
+            self.apply_async(args=[campaign_id, tenant_id], countdown=15)
         return result
     except Exception as exc:
         raise self.retry(exc=exc, countdown=30)
