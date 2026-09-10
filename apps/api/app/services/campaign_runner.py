@@ -20,7 +20,7 @@ async def run_campaign(campaign_id: str, tenant_id: str):
         phone_id = (campaign.schedule or {}).get('phone_number_id')
         if not phone_id: return {'status': 'blocked', 'reason': 'PHONE_NUMBER_REQUIRED'}
         pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == UUID(phone_id), PhoneNumber.tenant_id == tid, PhoneNumber.active == True))
-        if not pn or not pn.outbound_enabled: return {'status': 'blocked', 'reason': 'PHONE_OUTBOUND_DISABLED'}
+        if not pn or not (pn.capabilities or {}).get('outbound', True): return {'status': 'blocked', 'reason': 'PHONE_OUTBOUND_DISABLED'}
         agent = await db.scalar(select(Agent).where(Agent.id == pn.agent_id, Agent.tenant_id == tid, Agent.active == True))
         if not agent or not agent.active_version_id: return {'status': 'blocked', 'reason': 'AGENT_NOT_PUBLISHED'}
         version = await db.scalar(select(AgentVersion).where(AgentVersion.id == agent.active_version_id, AgentVersion.agent_id == agent.id, AgentVersion.tenant_id == tid, AgentVersion.status == 'PUBLISHED'))
@@ -34,14 +34,11 @@ async def run_campaign(campaign_id: str, tenant_id: str):
                 item.state = 'FAILED'; continue
             gate, reason = await check_outbound(db, tid, contact.id)
             if gate != 'ALLOWED':
-                item.state = 'FAILED'
-                db.add(CampaignAttempt(tenant_id=tid, campaign_id=cid, contact_id=contact.id, state='BLOCKED', error_code=reason))
-                continue
+                item.state = 'FAILED'; db.add(CampaignAttempt(tenant_id=tid, campaign_id=cid, contact_id=contact.id, state='BLOCKED', error_code=reason)); continue
             item.state = 'IN_PROGRESS'; item.attempts += 1
             call = Call(tenant_id=tid, phone_number_id=pn.id, agent_id=agent.id, agent_version_id=version.id, contact_id=contact.id, direction='OUTBOUND', from_number=pn.e164, to_number=contact.phone, status='QUEUED')
             db.add(call); await db.flush()
-            attempt = CampaignAttempt(tenant_id=tid, campaign_id=cid, contact_id=contact.id, call_id=call.id, state='STARTING')
-            db.add(attempt)
+            attempt = CampaignAttempt(tenant_id=tid, campaign_id=cid, contact_id=contact.id, call_id=call.id, state='STARTING'); db.add(attempt)
             try:
                 base = s.public_base_url.rstrip('/')
                 if not base.startswith('https://'): raise RuntimeError('PUBLIC_BASE_URL must use HTTPS')
