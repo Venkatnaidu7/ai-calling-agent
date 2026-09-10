@@ -28,16 +28,10 @@ export default function CallsConsole() {
   const [calling, setCalling] = useState(false)
 
   const selectedContact = contacts.find(c => c.id === contactId)
-  const availablePhones = useMemo(
-    () => phones.filter(p => p.active && p.outbound_enabled && (!agentId || p.agent_id === agentId)),
-    [phones, agentId]
-  )
+  const availablePhones = useMemo(() => phones.filter(p => p.active && p.outbound_enabled && (!agentId || p.agent_id === agentId)), [phones, agentId])
 
   async function request(path: string, init: RequestInit = {}) {
-    const res = await fetch(`${API}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(init.headers || {}) },
-    })
+    const res = await fetch(`${API}${path}`, { ...init, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(init.headers || {}) } })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(data.detail || 'Request failed')
     return data
@@ -68,22 +62,14 @@ export default function CallsConsole() {
   useEffect(() => { const t = localStorage.getItem('token'); if (t) setToken(t) }, [])
   useEffect(() => { if (token) { loadCalls(); loadResources() } }, [token])
   useEffect(() => { loadCalls() }, [status, direction])
-  useEffect(() => {
-    if (!phoneId || !availablePhones.some(p => p.id === phoneId)) setPhoneId(availablePhones[0]?.id || '')
-  }, [agentId, availablePhones])
-  useEffect(() => {
-    const timer = setInterval(() => { if (token) loadCalls() }, 3000)
-    return () => clearInterval(timer)
-  }, [token, status, direction])
+  useEffect(() => { if (!phoneId || !availablePhones.some(p => p.id === phoneId)) setPhoneId(availablePhones[0]?.id || '') }, [agentId, availablePhones])
+  useEffect(() => { const timer = setInterval(() => { if (token) loadCalls() }, 3000); return () => clearInterval(timer) }, [token, status, direction])
 
   async function startCall() {
     if (!contactId || !phoneId) { setError('Select a contact and an AI phone number before calling'); return }
     setCalling(true); setError(''); setNotice('')
-    try {
-      const result = await request(`/calls/outbound?contact_id=${encodeURIComponent(contactId)}&phone_number_id=${encodeURIComponent(phoneId)}`, { method: 'POST' })
-      setNotice(`Call started: ${result.status}`)
-      await loadCalls()
-    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to start call') }
+    try { const result = await request(`/calls/outbound?contact_id=${encodeURIComponent(contactId)}&phone_number_id=${encodeURIComponent(phoneId)}`, { method: 'POST' }); setNotice(`Call started: ${result.status}`); await loadCalls() }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to start call') }
     finally { setCalling(false) }
   }
 
@@ -121,7 +107,7 @@ export default function CallsConsole() {
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}><select value={status} onChange={e => setStatus(e.target.value)}><option value="">All statuses</option>{['QUEUED','RINGING','IN_PROGRESS','COMPLETED','FAILED','NO_ANSWER','BUSY'].map(x => <option key={x}>{x}</option>)}</select><select value={direction} onChange={e => setDirection(e.target.value)}><option value="">All directions</option><option>INBOUND</option><option>OUTBOUND</option></select></div>
 
       <section style={{ border: '1px solid #ddd', borderRadius: 12, overflow: 'hidden' }}>
-        {calls.length === 0 ? <p style={{ padding: 20 }}>No calls found.</p> : calls.map(c => <div key={c.id} style={{ padding: 16, borderBottom: '1px solid #eee', display: 'grid', gridTemplateColumns: '1.2fr .8fr .8fr 1fr auto', gap: 12, alignItems: 'center' }}><div><strong>{c.to_number || c.from_number || 'Unknown number'}</strong><div><small>{c.direction} · {new Date(c.created_at).toLocaleString()}</small></div></div><span>{c.status}</span><span>{c.duration_seconds != null ? `${c.duration_seconds}s` : '—'}</span><span>{c.outcome || c.provider_call_id || '—'}</span>{activeStatuses.has(c.status) ? <button onClick={() => hangup(c.id)}>Hang Up</button> : <span />}</div>)}
+        {calls.length === 0 ? <p style={{ padding: 20 }}>No calls found.</p> : calls.map(c => <div key={c.id} style={{ padding: 16, borderBottom: '1px solid #eee', display: 'grid', gridTemplateColumns: '1.2fr .8fr .8fr 1fr auto auto', gap: 12, alignItems: 'center' }}><div><strong>{c.to_number || c.from_number || 'Unknown number'}</strong><div><small>{c.direction} · {new Date(c.created_at).toLocaleString()}</small></div></div><span>{c.status}</span><span>{c.duration_seconds != null ? `${c.duration_seconds}s` : '—'}</span><span>{c.outcome || c.provider_call_id || '—'}</span><a href={`/calls/${c.id}`} style={{ fontWeight: 600 }}>Details</a>{activeStatuses.has(c.status) ? <button onClick={() => hangup(c.id)}>Hang Up</button> : <span />}</div>)}
       </section>
     </main>
   )
