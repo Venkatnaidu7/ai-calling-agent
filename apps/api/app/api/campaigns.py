@@ -1,4 +1,5 @@
 from uuid import UUID
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,17 @@ def phone_id(campaign: Campaign) -> UUID | None:
         return None
 
 
+def scheduled_start(schedule: dict | None):
+    value = (schedule or {}).get('start_at')
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 @router.get('', response_model=list[CampaignOut])
 async def list_campaigns(t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
     rows = (await db.scalars(select(Campaign).where(Campaign.tenant_id == UUID(t)).order_by(Campaign.created_at.desc()))).all()
@@ -52,7 +64,6 @@ async def create_campaign(data: CampaignCreate, t=Depends(tenant_id), db: AsyncS
     return as_campaign(x)
 
 
-# Static sub-routes must be declared before /{campaign_id}.
 @router.get('/{campaign_id}/contacts', response_model=list[CampaignContactOut])
 async def list_contacts(campaign_id: UUID, state: str | None = Query(None, max_length=30), t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
     x = await get_campaign(campaign_id, t, db)
@@ -72,13 +83,15 @@ async def campaign_stats(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSessi
 @router.post('/{campaign_id}/start', response_model=CampaignOut)
 async def start_campaign(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
     x = await get_campaign(campaign_id, t, db); s = get_settings()
-    if x.status == 'ACTIVE': return as_campaign(x)
+    if x.status in {'ACTIVE', 'SCHEDULED'}: return as_campaign(x)
     if not phone_id(x): raise HTTPException(409, 'Campaign has no phone number')
     if not s.outbound_enabled: raise HTTPException(403, 'Outbound calling is disabled')
     if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
     count = await db.scalar(select(func.count(CampaignContact.id)).where(CampaignContact.campaign_id == x.id, CampaignContact.state.in_(['QUEUED', 'RETRY']))) or 0
     if count == 0: raise HTTPException(409, 'Campaign has no callable contacts queued')
-    x.status = 'ACTIVE'; await db.commit(); await db.refresh(x)
+    start_at = scheduled_start(x.schedule)
+    x.status = 'SCHEDULED' if start_at and start_at > datetime.now(timezone.utc) else 'ACTIVE'
+    await db.commit(); await db.refresh(x)
     process_campaign.delay(str(x.id), t)
     return as_campaign(x)
 
