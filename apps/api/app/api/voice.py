@@ -11,9 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.models import Agent, AgentVersion, Call, Campaign, CampaignAttempt, CampaignContact, Contact, PhoneNumber, Transcript, TranscriptSegment
-from app.providers.openai_realtime import RealtimeBridge
+from app.providers.openai_realtime import RealtimeBridge, HANDOFF_TOOL
 from app.providers.twilio import connect_stream_xml, validate_twilio, validate_twilio_ws
 from app.services.call_intelligence import ensure_job
+from app.services.handoff import select_destination, is_business_hours, start_transfer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=['voice'])
@@ -42,6 +43,41 @@ async def create_inbound_call(form,pn,db):
     contact=await db.scalar(select(Contact).where(Contact.tenant_id==pn.tenant_id,Contact.phone==form.get('From'),Contact.status.notin_(['ARCHIVED'])))
     call=Call(tenant_id=pn.tenant_id,agent_id=agent.id,agent_version_id=version.id,phone_number_id=pn.id,contact_id=contact.id if contact else None,provider_call_id=form.get('CallSid'),direction='INBOUND',from_number=form.get('From'),to_number=form.get('To'),status='IN_PROGRESS')
     db.add(call); await db.commit(); return call
+
+async def execute_handoff_tool(call_id, tenant_id, arguments):
+    """Execute the model's constrained handoff request; never accept a raw phone number."""
+    try:
+        call_uuid=uuid.UUID(str(call_id)); tid=uuid.UUID(str(tenant_id))
+        reason=str(arguments.get('reason') or '').strip()[:1000]
+        if not reason: return {'ok':False,'code':'REASON_REQUIRED','message':'A handoff reason is required.'}, False
+        routing_group_id=arguments.get('routing_group_id')
+        destination_id=arguments.get('destination_id')
+        rg=uuid.UUID(str(routing_group_id)) if routing_group_id else None
+        did=uuid.UUID(str(destination_id)) if destination_id else None
+    except (ValueError,TypeError,AttributeError):
+        return {'ok':False,'code':'INVALID_ARGUMENTS','message':'Invalid handoff arguments.'}, False
+    async with SessionLocal() as db:
+        call=await db.scalar(select(Call).where(Call.id==call_uuid,Call.tenant_id==tid))
+        if not call: return {'ok':False,'code':'CALL_NOT_FOUND','message':'The active call could not be found.'}, False
+        if call.status not in {'QUEUED','RINGING','IN_PROGRESS'}: return {'ok':False,'code':'CALL_NOT_ACTIVE','message':'The call is no longer active.'}, False
+        if not call.provider_call_id: return {'ok':False,'code':'PROVIDER_NOT_CONNECTED','message':'The voice provider is not connected.'}, False
+        if not await is_business_hours(db,tid): return {'ok':False,'code':'OUTSIDE_BUSINESS_HOURS','message':'Human support is currently outside business hours.'}, False
+        if did:
+            destination=await db.scalar(select(__import__('app.models',fromlist=['TransferDestination']).TransferDestination).where(__import__('app.models',fromlist=['TransferDestination']).TransferDestination.id==did,__import__('app.models',fromlist=['TransferDestination']).TransferDestination.tenant_id==tid))
+        else:
+            destination=await select_destination(db,tid,rg)
+        if not destination: return {'ok':False,'code':'NO_AGENT_AVAILABLE','message':'No human support agent is currently available.'}, False
+        try:
+            handoff=await start_transfer(db,tid,call,destination,reason)
+            await db.commit()
+            return {'ok':True,'status':handoff.status,'destination':destination.name}, True
+        except HTTPException as exc:
+            await db.rollback()
+            return {'ok':False,'code':'TRANSFER_FAILED','message':str(exc.detail)}, False
+        except Exception:
+            await db.rollback()
+            logger.exception('handoff_tool_failed',extra={'call_id':str(call_uuid)})
+            return {'ok':False,'code':'TRANSFER_FAILED','message':'Unable to start human transfer.'}, False
 
 @router.post('/twilio/inbound')
 async def inbound(request:Request,db:AsyncSession=Depends(get_db)):
@@ -89,6 +125,8 @@ async def status(request:Request,db:AsyncSession=Depends(get_db)):
                 elif campaign.status=='ACTIVE': continue_campaign_id=campaign.id
     if new_status in TERMINAL_CALL_STATES and get_settings().intelligence_enabled:
         await ensure_job(db,call.tenant_id,call.id); intelligence=True
+    from app.services.handoff import sync_handoff_state
+    await sync_handoff_state(db,call,form.get('CallStatus'))
     await db.commit()
     if continue_campaign_id:
         from app.workers.tasks import process_campaign
@@ -114,12 +152,20 @@ async def stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None):
                 transcript=Transcript(tenant_id=call.tenant_id,call_id=call.id,language=version.language if version else None,status='PROCESSING'); db.add(transcript); await db.commit()
         if not version: await websocket.close(code=1011); return
         if not get_settings().openai_api_key: await websocket.close(code=1011); return
-        bridge=RealtimeBridge(version.system_instructions,version.voice,version.language); await bridge.connect()
+        bridge=RealtimeBridge(version.system_instructions,version.voice,version.language,[HANDOFF_TOOL]); await bridge.connect()
         async def ai_loop():
             async for event in bridge.events():
                 kind=event.get('type')
                 if kind in {'response.output_audio.delta','response.audio.delta'} and stream_sid and event.get('delta'):
                     await websocket.send_text(json.dumps({'event':'media','streamSid':stream_sid,'media':{'payload':event['delta']}}))
+                elif kind=='response.function_call_arguments.done' and event.get('name')=='transfer_to_human':
+                    try: args=json.loads(event.get('arguments') or '{}')
+                    except json.JSONDecodeError: args={}
+                    result,success=await execute_handoff_tool(call_id,call.tenant_id,args)
+                    await bridge.tool_result(event.get('call_id'),result,create_response=not success)
+                    if success:
+                        await bridge.close()
+                        return
                 elif kind in {'conversation.item.input_audio_transcription.completed','conversation.item.input_audio_transcription.segment'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
@@ -153,8 +199,6 @@ async def stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None):
         try:
             async with SessionLocal() as db:
                 call=await db.scalar(select(Call).where(Call.id==call_id))
-                if call and call.status in {'QUEUED','RINGING','IN_PROGRESS'}:
-                    call.status='COMPLETED'; call.ended_at=datetime.now(timezone.utc)
                 if call and get_settings().intelligence_enabled:
                     await ensure_job(db,call.tenant_id,call.id); intelligence=True
                 await db.commit()
@@ -163,9 +207,6 @@ async def stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None):
                 process_call_intelligence.apply_async(args=[str(call_id)],countdown=5)
         except Exception: logger.exception('voice_stream_cleanup_failed',extra={'call_id':str(call_id)})
 
-# ---------------------------------------------------------------------------
-# Plivo provider routes. Twilio routes above remain unchanged.
-# ---------------------------------------------------------------------------
 @router.post('/plivo/inbound')
 async def plivo_inbound(request:Request,db:AsyncSession=Depends(get_db)):
     from app.providers.plivo import stream_xml, validate_webhook
@@ -197,7 +238,11 @@ async def plivo_ring(request:Request,db:AsyncSession=Depends(get_db)):
     form=dict(await request.form()); validate_webhook(request,form)
     request_uuid=form.get('RequestUUID'); call_uuid=form.get('CallUUID')
     call=await db.scalar(select(Call).where(or_(Call.provider_call_id==request_uuid,Call.provider_call_id==call_uuid)))
-    if call: call.status='RINGING'; await db.commit()
+    if call:
+        call.status='RINGING'
+        from app.services.handoff import sync_handoff_state
+        await sync_handoff_state(db,call,form.get('CallStatus') or 'RINGING')
+        await db.commit()
     return {'ok':True}
 
 @router.post('/plivo/status')
@@ -205,7 +250,7 @@ async def plivo_status(request:Request,db:AsyncSession=Depends(get_db)):
     from app.providers.plivo import validate_webhook
     form=dict(await request.form()); validate_webhook(request,form)
     provider_id=form.get('CallUUID') or form.get('RequestUUID')
-    call=await db.scalar(select(Call).where(or_(Call.provider_call_id==provider_id,Call.provider_call_id==form.get('RequestUUID'))))
+    call=await db.scalar(select(Call).where(or_(Call.provider_call_id==provider_id,call.provider_call_id==form.get('RequestUUID'))))
     if not call: return {'ok':True}
     if form.get('CallUUID'): call.provider_call_id=form['CallUUID']
     new_status=STATUS_MAP.get((form.get('CallStatus') or '').lower(),call.status); was_terminal=call.status in TERMINAL_CALL_STATES
@@ -214,6 +259,8 @@ async def plivo_status(request:Request,db:AsyncSession=Depends(get_db)):
         try: call.duration_seconds=int(form.get('Duration') or form.get('CallDuration'))
         except (TypeError,ValueError): pass
     if new_status in TERMINAL_CALL_STATES: call.ended_at=datetime.now(timezone.utc)
+    from app.services.handoff import sync_handoff_state
+    await sync_handoff_state(db,call,form.get('CallStatus'))
     intelligence=False
     if new_status in TERMINAL_CALL_STATES and get_settings().intelligence_enabled and not was_terminal:
         await ensure_job(db,call.tenant_id,call.id); intelligence=True
@@ -249,19 +296,26 @@ async def plivo_stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None
                 transcript=Transcript(tenant_id=call.tenant_id,call_id=call.id,language=version.language if version else None,status='PROCESSING'); db.add(transcript); await db.commit()
         if not version: await websocket.close(code=1011); return
         if not get_settings().openai_api_key: await websocket.close(code=1011); return
-        bridge=RealtimeBridge(version.system_instructions,version.voice,version.language); await bridge.connect()
+        bridge=RealtimeBridge(version.system_instructions,version.voice,version.language,[HANDOFF_TOOL]); await bridge.connect()
         async def ai_loop():
             async for event in bridge.events():
                 kind=event.get('type')
                 if kind in {'response.output_audio.delta','response.audio.delta'} and stream_sid and event.get('delta'):
                     await websocket.send_text(audio_message(event['delta']))
+                elif kind=='response.function_call_arguments.done' and event.get('name')=='transfer_to_human':
+                    try: args=json.loads(event.get('arguments') or '{}')
+                    except json.JSONDecodeError: args={}
+                    result,success=await execute_handoff_tool(call_id,call.tenant_id,args)
+                    await bridge.tool_result(event.get('call_id'),result,create_response=not success)
+                    if success:
+                        await bridge.close()
+                        return
                 elif kind in {'conversation.item.input_audio_transcription.completed','conversation.item.input_audio_transcription.segment'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
                         async with SessionLocal() as db:
                             tr=await db.scalar(select(Transcript).where(Transcript.call_id==call_id,Transcript.tenant_id==call.tenant_id))
-                            if tr:
-                                db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker='CUSTOMER',text=text,started_at=event.get('start'),ended_at=event.get('end'))); await db.commit()
+                            if tr: db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker='CUSTOMER',text=text,started_at=event.get('start'),ended_at=event.get('end')); await db.commit()
                 elif kind in {'response.audio_transcript.done','response.output_audio_transcript.done','response.output_text.done'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
@@ -294,8 +348,6 @@ async def plivo_stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None
         try:
             async with SessionLocal() as db:
                 call=await db.scalar(select(Call).where(Call.id==call_id))
-                if call and call.status in {'QUEUED','RINGING','IN_PROGRESS'}:
-                    call.status='COMPLETED'; call.ended_at=datetime.now(timezone.utc)
                 if call and get_settings().intelligence_enabled:
                     await ensure_job(db,call.tenant_id,call.id); intelligence=True
                 await db.commit()
