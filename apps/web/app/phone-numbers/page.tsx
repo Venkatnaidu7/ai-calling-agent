@@ -55,15 +55,25 @@ export default function PhoneNumbersPage() {
     } catch (e: any) { setError(e.message) } finally { setBusy(false) }
   }
 
-  async function provision(selected?: string) {
+  async function configureNumber(mode: 'attach' | 'buy', selected?: string) {
     const chosen = selected || number
     if (!chosen) return setError('Select or enter a phone number first')
+    if (provider === 'plivo' && mode === 'attach' && selected) return setError('Select Attach Existing for a number you already own')
     setBusy(true); setError(''); setMessage('')
     try {
-      const path = provider === 'plivo' ? '/phone-numbers/plivo/attach' : '/phone-numbers/provision'
-      const body = { phone_number: chosen, ...(provider === 'twilio' ? { provider: 'twilio' } : {}), agent_id: agentId || null, country, inbound_enabled: inbound, outbound_enabled: outbound }
+      const path = provider === 'plivo' && mode === 'attach' ? '/phone-numbers/plivo/attach' : '/phone-numbers/provision'
+      const body = {
+        phone_number: chosen,
+        ...(provider === 'twilio' ? { provider: 'twilio' } : { provider: 'plivo' }),
+        agent_id: agentId || null,
+        country,
+        inbound_enabled: inbound,
+        outbound_enabled: outbound,
+      }
       await request(path, { method: 'POST', body: JSON.stringify(body) })
-      setNumber(''); setAvailable([]); setMessage(`${provider.toUpperCase()} number configured successfully.`); await load()
+      setNumber(''); setAvailable([])
+      setMessage(mode === 'buy' ? `${provider.toUpperCase()} number purchased and configured successfully.` : `${provider.toUpperCase()} number attached successfully.`)
+      await load()
     } catch (e: any) { setError(e.message) } finally { setBusy(false) }
   }
 
@@ -82,10 +92,10 @@ export default function PhoneNumbersPage() {
 
     <section className="card">
       <h2>Configure provider number</h2>
-      <p>Plivo can attach a number you already own. Twilio/Plivo provisioning remains provider-controlled.</p>
+      <p>{provider === 'plivo' ? 'Use Attach Existing for a Plivo number already owned by your account, or search and purchase an available Plivo number.' : 'Search and purchase an available Twilio number, or enter a Twilio number that your account can provision.'}</p>
       <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <label>Provider<select value={provider} onChange={e => { setProvider(e.target.value as 'twilio' | 'plivo'); setAvailable([]) }}><option value="plivo">Plivo</option><option value="twilio">Twilio</option></select></label>
+          <label>Provider<select value={provider} onChange={e => { setProvider(e.target.value as 'twilio' | 'plivo'); setAvailable([]); setNumber('') }}><option value="plivo">Plivo</option><option value="twilio">Twilio</option></select></label>
           <label>Country<input value={country} onChange={e => setCountry(e.target.value.toUpperCase())} maxLength={4} placeholder="IN" /></label>
         </div>
         <label>Phone number<input value={number} onChange={e => setNumber(e.target.value)} placeholder="E.164, e.g. +919876543210" /></label>
@@ -94,11 +104,14 @@ export default function PhoneNumbersPage() {
           <label>Area code for search<input value={areaCode} onChange={e => setAreaCode(e.target.value)} placeholder="Optional" /></label>
         </div>
         <div style={{ display: 'flex', gap: 20 }}><label><input type="checkbox" checked={inbound} onChange={e => setInbound(e.target.checked)} /> Inbound</label><label><input type="checkbox" checked={outbound} onChange={e => setOutbound(e.target.checked)} /> Outbound</label></div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}><button disabled={busy} onClick={searchNumbers}>{busy ? 'Working…' : 'Search available numbers'}</button><button disabled={busy || !number} onClick={() => provision()}>{busy ? 'Working…' : `Configure ${provider.toUpperCase()} number`}</button></div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button disabled={busy} onClick={searchNumbers}>{busy ? 'Working…' : 'Search available numbers'}</button>
+          {provider === 'plivo' ? <button disabled={busy || !number} onClick={() => configureNumber('attach')}>{busy ? 'Working…' : 'Attach existing Plivo number'}</button> : <button disabled={busy || !number} onClick={() => configureNumber('buy')}>{busy ? 'Working…' : 'Buy / configure Twilio number'}</button>}
+        </div>
       </div>
     </section>
 
-    {available.length > 0 && <section className="card" style={{ marginTop: 16 }}><h2>Available {provider.toUpperCase()} numbers</h2><div style={{ display: 'grid', gap: 10, marginTop: 12 }}>{available.map(n => <div key={n.phone_number} style={{ border: '1px solid #ddd', borderRadius: 10, padding: 14, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}><div><strong>{n.phone_number}</strong><div>{n.locality || n.friendly_name || ''} {n.region || ''}{n.monthly_rental_rate ? ` · ${n.monthly_rental_rate}/month` : ''}</div></div><button disabled={busy} onClick={() => provision(n.phone_number)}>Use this number</button></div>)}</div></section>}
+    {available.length > 0 && <section className="card" style={{ marginTop: 16 }}><h2>Available {provider.toUpperCase()} numbers</h2><div style={{ display: 'grid', gap: 10, marginTop: 12 }}>{available.map(n => <div key={n.phone_number} style={{ border: '1px solid #ddd', borderRadius: 10, padding: 14, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}><div><strong>{n.phone_number}</strong><div>{n.locality || n.friendly_name || ''} {n.region || ''}{n.monthly_rental_rate ? ` · ${n.monthly_rental_rate}/month` : ''}</div></div><button disabled={busy} onClick={() => configureNumber('buy', n.phone_number)}>Buy this number</button></div>)}</div></section>}
 
     <section className="card" style={{ marginTop: 16 }}><h2>Configured numbers</h2>{phones.length === 0 ? <p>No numbers configured.</p> : phones.map(p => <div key={p.id} style={{ border: '1px solid #ddd', borderRadius: 10, padding: 16, marginTop: 10 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}><div><strong>{p.e164}</strong><div>{p.provider.toUpperCase()} · {p.country || 'Unknown country'} · {p.agent_id ? agents.find(a => a.id === p.agent_id)?.name || 'Assigned agent' : 'No agent assigned'}</div><small>Provider ID: {p.provider_number_id || 'Not available'}</small></div><span className="pill">{p.active ? 'Active' : 'Disabled'}</span></div><div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}><button disabled={busy} onClick={() => toggle(p.id, 'active', !p.active)}>{p.active ? 'Disable' : 'Enable'}</button><button disabled={busy} onClick={() => toggle(p.id, 'inbound_enabled', !p.inbound_enabled)}>{p.inbound_enabled ? 'Disable inbound' : 'Enable inbound'}</button><button disabled={busy} onClick={() => toggle(p.id, 'outbound_enabled', !p.outbound_enabled)}>{p.outbound_enabled ? 'Disable outbound' : 'Enable outbound'}</button></div></div>)}</section>
   </main>
