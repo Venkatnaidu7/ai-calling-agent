@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Dial
 from plivo import plivoxml
 from app.api.deps import tenant_id
@@ -112,12 +111,11 @@ async def twilio_execute(call_id: UUID, request: Request, db: AsyncSession=Depen
 @router.post('/twilio/leg-status/{call_id}')
 async def twilio_leg_status(call_id: UUID, request: Request, db: AsyncSession=Depends(get_db)):
     form=dict(await request.form()); validate_twilio(request,form)
-    call=await db.scalar(select(Call).where(Call.id==call_id,Call.tenant_id==select(Call.tenant_id).scalar_subquery()))
+    call=await db.scalar(select(Call).where(Call.id==call_id))
     if not call or call.provider_call_id != form.get('ParentCallSid'): raise HTTPException(404,'Call not found')
     handoff=await db.scalar(select(CallHandoff).where(CallHandoff.call_id==call_id,CallHandoff.tenant_id==call.tenant_id))
     if handoff:
-        await sync_handoff_state(db,call,form.get('CallStatus'))
-        await db.commit()
+        await sync_handoff_state(db,call,form.get('CallStatus')); await db.commit()
     return {'ok':True}
 
 @router.post('/twilio/action/{call_id}')
@@ -130,12 +128,10 @@ async def twilio_action(call_id: UUID, request: Request, db: AsyncSession=Depend
     if status in {'completed','answered'}: handoff.status='CONNECTED'
     else: handoff.status='FAILED'; handoff.failure_reason=status or 'transfer_failed'
     await db.commit()
-    response=VoiceResponse()
     if handoff.status=='FAILED':
-        # Resume the AI stream instead of terminating the caller when the human leg fails.
         from app.api.voice import stream_response
         return stream_response(call.id)
-    response.hangup()
+    response=VoiceResponse(); response.hangup()
     return Response(content=str(response),media_type='application/xml')
 
 @router.post('/plivo/execute/{call_id}')
@@ -155,9 +151,8 @@ async def plivo_execute(call_id: UUID, request: Request, db: AsyncSession=Depend
 @router.post('/plivo/leg-status/{call_id}')
 async def plivo_leg_status(call_id: UUID, request: Request, db: AsyncSession=Depends(get_db)):
     form=dict(await request.form()); validate_webhook(request,form)
-    call_uuid=form.get('DialALegUUID') or form.get('CallUUID')
     call=await db.scalar(select(Call).where(Call.id==call_id))
-    if not call or (call.provider_call_id and call.provider_call_id != call_uuid): raise HTTPException(404,'Call not found')
+    if not call: raise HTTPException(404,'Call not found')
     handoff=await db.scalar(select(CallHandoff).where(CallHandoff.call_id==call_id,CallHandoff.tenant_id==call.tenant_id))
     if handoff:
         action=(form.get('DialAction') or '').lower(); status=form.get('DialBLegStatus') or form.get('CallStatus') or action
