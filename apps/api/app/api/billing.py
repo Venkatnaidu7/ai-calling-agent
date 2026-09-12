@@ -15,10 +15,6 @@ from app.models import Plan, Subscription, UsageRecord
 router = APIRouter(prefix='/billing', tags=['billing'])
 
 
-def stripe_enabled() -> bool:
-    return bool(get_settings().stripe_secret_key)
-
-
 def configure_stripe() -> None:
     key = get_settings().stripe_secret_key
     if not key:
@@ -37,15 +33,7 @@ def current_period() -> tuple[datetime, datetime]:
 @router.get('/plans')
 async def plans(db: AsyncSession = Depends(get_db)):
     rows = (await db.scalars(select(Plan).order_by(Plan.name))).all()
-    return [
-        {
-            'id': str(p.id),
-            'name': p.name,
-            'limits': p.limits or {},
-            'stripe_price_id': p.stripe_price_id,
-        }
-        for p in rows
-    ]
+    return [{'id': str(p.id), 'name': p.name, 'limits': p.limits or {}, 'stripe_price_id': p.stripe_price_id} for p in rows]
 
 
 @router.get('/subscription')
@@ -54,15 +42,7 @@ async def subscription(t=Depends(tenant_id), db: AsyncSession = Depends(get_db))
     if not sub:
         return {'subscription': None}
     plan = await db.scalar(select(Plan).where(Plan.id == sub.plan_id)) if sub.plan_id else None
-    return {
-        'subscription': {
-            'id': str(sub.id),
-            'status': sub.status,
-            'plan': plan.name if plan else None,
-            'stripe_customer_id': sub.stripe_customer_id,
-            'stripe_subscription_id': sub.stripe_subscription_id,
-        }
-    }
+    return {'subscription': {'id': str(sub.id), 'status': sub.status, 'plan': plan.name if plan else None, 'stripe_customer_id': sub.stripe_customer_id, 'stripe_subscription_id': sub.stripe_subscription_id}}
 
 
 @router.get('/usage')
@@ -74,11 +54,7 @@ async def usage(t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
         .where(UsageRecord.tenant_id == tid, UsageRecord.period_start == start, UsageRecord.period_end == end)
         .group_by(UsageRecord.metric)
     )).all()
-    return {
-        'period_start': start.isoformat(),
-        'period_end': end.isoformat(),
-        'usage': {metric: float(quantity) for metric, quantity in rows},
-    }
+    return {'period_start': start.isoformat(), 'period_end': end.isoformat(), 'usage': {metric: float(quantity) for metric, quantity in rows}}
 
 
 @router.post('/checkout')
@@ -88,7 +64,6 @@ async def checkout(plan_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depen
     plan = await db.scalar(select(Plan).where(Plan.id == plan_id))
     if not plan or not plan.stripe_price_id:
         raise HTTPException(400, 'Selected plan is not configured for Stripe checkout')
-
     sub = await db.scalar(select(Subscription).where(Subscription.tenant_id == tid))
     customer_id = sub.stripe_customer_id if sub else None
     if not customer_id:
@@ -100,10 +75,8 @@ async def checkout(plan_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depen
         else:
             sub.stripe_customer_id = customer_id
         await db.commit()
-
     session = stripe.checkout.Session.create(
-        mode='subscription',
-        customer=customer_id,
+        mode='subscription', customer=customer_id,
         line_items=[{'price': plan.stripe_price_id, 'quantity': 1}],
         success_url=f"{get_settings().frontend_url.rstrip('/')}/billing?checkout=success",
         cancel_url=f"{get_settings().frontend_url.rstrip('/')}/billing?checkout=cancelled",
@@ -119,10 +92,7 @@ async def portal(t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
     sub = await db.scalar(select(Subscription).where(Subscription.tenant_id == UUID(t)))
     if not sub or not sub.stripe_customer_id:
         raise HTTPException(409, 'No Stripe customer is configured for this tenant')
-    session = stripe.billing_portal.Session.create(
-        customer=sub.stripe_customer_id,
-        return_url=f"{get_settings().frontend_url.rstrip('/')}/billing",
-    )
+    session = stripe.billing_portal.Session.create(customer=sub.stripe_customer_id, return_url=f"{get_settings().frontend_url.rstrip('/')}/billing")
     return {'portal_url': session.url}
 
 
@@ -139,10 +109,10 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         raise HTTPException(400, 'Invalid webhook payload')
     except stripe.error.SignatureVerificationError:
         raise HTTPException(400, 'Invalid webhook signature')
-
     obj = event['data']['object']
     event_type = event['type']
-    tenant_value = (obj.get('metadata') or {}).get('tenant_id')
+    metadata = obj.get('metadata') or {}
+    tenant_value = metadata.get('tenant_id')
     customer_id = obj.get('customer')
     sub = None
     if customer_id:
@@ -152,34 +122,23 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             sub = await db.scalar(select(Subscription).where(Subscription.tenant_id == UUID(tenant_value)))
         except ValueError:
             sub = None
-
-    if event_type == 'checkout.session.completed':
-        if not sub and tenant_value:
+    if event_type == 'checkout.session.completed' and sub:
+        sub.stripe_customer_id = customer_id or sub.stripe_customer_id
+        sub.stripe_subscription_id = obj.get('subscription') or sub.stripe_subscription_id
+        sub.status = 'ACTIVE'
+        plan_value = metadata.get('plan_id')
+        if plan_value:
             try:
-                sub = await db.scalar(select(Subscription).where(Subscription.tenant_id == UUID(tenant_value)))
+                plan = await db.scalar(select(Plan).where(Plan.id == UUID(plan_value)))
+                if plan: sub.plan_id = plan.id
             except ValueError:
-                sub = None
-        if sub:
-            sub.stripe_customer_id = customer_id or sub.stripe_customer_id
-            sub.stripe_subscription_id = obj.get('subscription') or sub.stripe_subscription_id
-            sub.status = 'ACTIVE'
-            plan_value = (obj.get('metadata') or {}).get('plan_id')
-            if plan_value:
-                try:
-                    plan = await db.scalar(select(Plan).where(Plan.id == UUID(plan_value)))
-                    if plan:
-                        sub.plan_id = plan.id
-                except ValueError:
-                    pass
-    elif event_type in {'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'}:
-        if sub:
-            sub.stripe_subscription_id = obj.get('id') or sub.stripe_subscription_id
-            sub.status = str(obj.get('status', 'unknown')).upper()
-            price_id = ((obj.get('items') or {}).get('data') or [{}])[0].get('price', {}).get('id')
-            if price_id:
-                plan = await db.scalar(select(Plan).where(Plan.stripe_price_id == price_id))
-                if plan:
-                    sub.plan_id = plan.id
-
+                pass
+    elif event_type in {'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'} and sub:
+        sub.stripe_subscription_id = obj.get('id') or sub.stripe_subscription_id
+        sub.status = str(obj.get('status', 'unknown')).upper()
+        price_id = ((obj.get('items') or {}).get('data') or [{}])[0].get('price', {}).get('id')
+        if price_id:
+            plan = await db.scalar(select(Plan).where(Plan.stripe_price_id == price_id))
+            if plan: sub.plan_id = plan.id
     await db.commit()
     return {'received': True, 'event_id': event['id']}
