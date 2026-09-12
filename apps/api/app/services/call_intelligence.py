@@ -1,6 +1,7 @@
 import json
 import httpx
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models import Call, CallActionItem, CallIntelligenceJob, CallSummary, Transcript, TranscriptSegment
@@ -12,11 +13,21 @@ def build_transcript_text(segments: list[TranscriptSegment]) -> str:
     return "\n".join(f"{s.speaker}: {s.text}" for s in segments if s.text)
 
 async def ensure_job(db: AsyncSession, tenant_id, call_id):
+    """Get-or-create the single intelligence job for a call, safely under callback races."""
     job = await db.scalar(select(CallIntelligenceJob).where(CallIntelligenceJob.call_id == call_id, CallIntelligenceJob.tenant_id == tenant_id))
-    if not job:
-        job = CallIntelligenceJob(tenant_id=tenant_id, call_id=call_id, status='QUEUED')
-        db.add(job); await db.flush()
-    return job
+    if job:
+        return job
+    job = CallIntelligenceJob(tenant_id=tenant_id, call_id=call_id, status='QUEUED')
+    db.add(job)
+    try:
+        await db.flush()
+        return job
+    except IntegrityError:
+        await db.rollback()
+        job = await db.scalar(select(CallIntelligenceJob).where(CallIntelligenceJob.call_id == call_id, CallIntelligenceJob.tenant_id == tenant_id))
+        if not job:
+            raise
+        return job
 
 async def analyze_call(db: AsyncSession, tenant_id, call_id):
     settings = get_settings()
