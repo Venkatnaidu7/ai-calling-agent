@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api/v1'
 
 type Segment = { speaker: string; text: string; started_at: string | null; ended_at: string | null; confidence: number | null }
 type Summary = { summary: string; intent: string; outcome: string; sentiment: string; follow_up_required: boolean; next_action: string }
