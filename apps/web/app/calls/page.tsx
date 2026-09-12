@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001/api/v1'
 
 type Contact = { id: string; first_name: string; last_name: string; phone: string | null; email: string | null; status: string }
 type Agent = { id: string; name: string; description: string | null; active_version_id: string | null; active: boolean }
