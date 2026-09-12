@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,21 +23,12 @@ async def select_destination(db: AsyncSession, tenant_id, routing_group_id=None)
         return await db.scalar(query.order_by(HumanAgent.updated_at.asc(), HumanAgent.priority.desc()).limit(1))
     return await db.scalar(select(TransferDestination).where(TransferDestination.tenant_id == tenant_id).order_by(TransferDestination.created_at.asc()).limit(1))
 
-async def is_business_hours(db: AsyncSession, tenant_id, now: datetime | None = None) -> bool:
-    bh = await db.scalar(select(BusinessHours).where(BusinessHours.tenant_id == tenant_id))
-    if not bh:
-        return True
-    try:
-        zone = ZoneInfo(bh.timezone or 'UTC')
-    except ZoneInfoNotFoundError:
-        return False
-    local = now.astimezone(zone) if now else datetime.now(zone)
-    rule = (bh.hours or {}).get(local.strftime('%a').lower())
+
+def _window_contains(rule, current: str) -> bool:
     if isinstance(rule, dict):
         rule = [rule]
     if not isinstance(rule, list):
         return False
-    current = local.strftime('%H:%M')
     for window in rule:
         if isinstance(window, dict):
             start, end = window.get('start'), window.get('end')
@@ -53,15 +44,52 @@ async def is_business_hours(db: AsyncSession, tenant_id, now: datetime | None = 
             return True
     return False
 
+
+async def is_business_hours(db: AsyncSession, tenant_id, now: datetime | None = None) -> bool:
+    bh = await db.scalar(select(BusinessHours).where(BusinessHours.tenant_id == tenant_id))
+    if not bh:
+        return True
+    try:
+        zone = ZoneInfo(bh.timezone or 'UTC')
+    except ZoneInfoNotFoundError:
+        return False
+    local = now.astimezone(zone) if now else datetime.now(zone)
+    hours = bh.hours or {}
+    current = local.strftime('%H:%M')
+    today_rule = hours.get(local.strftime('%a').lower())
+    if _window_contains(today_rule, current):
+        return True
+    # An overnight window belongs to the previous calendar day as well.
+    previous = local - timedelta(days=1)
+    previous_rule = hours.get(previous.strftime('%a').lower())
+    if isinstance(previous_rule, dict):
+        previous_rule = [previous_rule]
+    if isinstance(previous_rule, list):
+        for window in previous_rule:
+            if isinstance(window, dict):
+                start, end = window.get('start'), window.get('end')
+            elif isinstance(window, (list, tuple)) and len(window) == 2:
+                start, end = window
+            else:
+                continue
+            if isinstance(start, str) and isinstance(end, str) and start > end and current <= end:
+                return True
+    return False
+
+
 async def create_or_get_handoff(db: AsyncSession, tenant_id, call, destination, reason=None):
     handoff = await db.scalar(select(CallHandoff).where(CallHandoff.call_id == call.id, CallHandoff.tenant_id == tenant_id))
     if handoff:
         return handoff
     provider = await db.scalar(select(PhoneNumber.provider).where(PhoneNumber.id == call.phone_number_id, PhoneNumber.tenant_id == tenant_id)) or 'twilio'
-    handoff = CallHandoff(tenant_id=tenant_id, call_id=call.id, destination_id=getattr(destination, 'id', None), destination_phone=destination.phone, provider=provider, status='REQUESTED', reason=reason)
+    # HumanAgent IDs are not TransferDestination foreign keys; keep destination_id
+    # only when the selected destination is an actual TransferDestination row.
+    destination_id = destination.id if isinstance(destination, TransferDestination) else None
+    handoff = CallHandoff(tenant_id=tenant_id, call_id=call.id, destination_id=destination_id, destination_phone=destination.phone, provider=provider, status='REQUESTED', reason=reason)
     db.add(handoff)
     await db.flush()
     return handoff
+
 
 async def start_transfer(db: AsyncSession, tenant_id, call, destination, reason=None):
     handoff = await create_or_get_handoff(db, tenant_id, call, destination, reason)
@@ -87,7 +115,7 @@ async def start_transfer(db: AsyncSession, tenant_id, call, destination, reason=
             if not s.plivo_auth_id or not s.plivo_auth_token:
                 raise HTTPException(503, 'Plivo is not configured')
             url = f'{base}/api/v1/handoff/plivo/execute/{call.id}'
-            PlivoClient(s.plivo_auth_id,s.plivo_auth_token).calls.update(call.provider_call_id, legs='aleg', aleg_url=url, aleg_method='POST')
+            PlivoClient(s.plivo_auth_id, s.plivo_auth_token).calls.update(call.provider_call_id, legs='aleg', aleg_url=url, aleg_method='POST')
         else:
             raise HTTPException(400, 'Unsupported voice provider')
     except HTTPException:
@@ -101,6 +129,7 @@ async def start_transfer(db: AsyncSession, tenant_id, call, destination, reason=
     call.outcome = 'HUMAN_HANDOFF'
     await db.flush()
     return handoff
+
 
 async def sync_handoff_state(db: AsyncSession, call, provider_status: str):
     """Synchronize transfer state from provider callbacks, idempotently."""
