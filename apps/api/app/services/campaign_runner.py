@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 from sqlalchemy import select
 from twilio.rest import Client
+from plivo import RestClient as PlivoClient
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
@@ -21,9 +22,61 @@ def scheduled_start(schedule):
         return None
 
 
+def _provider_ready(provider: str) -> bool:
+    s = get_settings()
+    if provider == 'twilio':
+        return bool(s.twilio_account_sid and s.twilio_auth_token)
+    if provider == 'plivo':
+        return bool(s.plivo_auth_id and s.plivo_auth_token)
+    return False
+
+
+def _start_provider_call(provider: str, call_id: UUID, from_number: str, to_number: str):
+    s = get_settings()
+    base = s.public_base_url.rstrip('/')
+    if not base.startswith('https://'):
+        raise RuntimeError('PUBLIC_BASE_URL must use HTTPS')
+    if provider == 'twilio':
+        client = Client(s.twilio_account_sid, s.twilio_auth_token)
+        return client.calls.create(
+            to=to_number,
+            from_=from_number,
+            url=f'{base}/api/v1/voice/twilio/outbound/{call_id}',
+            method='POST',
+            status_callback=f'{base}/api/v1/voice/twilio/status',
+            status_callback_method='POST',
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+        )
+    if provider == 'plivo':
+        client = PlivoClient(s.plivo_auth_id, s.plivo_auth_token)
+        return client.calls.create(
+            from_=from_number,
+            to_=to_number,
+            answer_url=f'{base}/api/v1/voice/plivo/outbound/{call_id}',
+            answer_method='POST',
+            ring_url=f'{base}/api/v1/voice/plivo/ring',
+            ring_method='POST',
+            hangup_url=f'{base}/api/v1/voice/plivo/status',
+            hangup_method='POST',
+        )
+    raise RuntimeError(f'Unsupported voice provider: {provider}')
+
+
+def _provider_call_id(result, provider: str):
+    if provider == 'twilio':
+        value = getattr(result, 'sid', None)
+    else:
+        value = getattr(result, 'request_uuid', None)
+        if not value and isinstance(result, dict):
+            value = result.get('request_uuid')
+    if not value:
+        raise RuntimeError(f'{provider.title()} did not return a provider call identifier')
+    return value
+
+
 async def run_campaign(campaign_id: str, tenant_id: str):
     s = get_settings()
-    if not s.outbound_enabled or not s.twilio_account_sid or not s.twilio_auth_token:
+    if not s.outbound_enabled:
         return {'status': 'blocked', 'reason': 'OUTBOUND_NOT_READY'}
     tid, cid = UUID(tenant_id), UUID(campaign_id)
     async with SessionLocal() as db:
@@ -46,6 +99,11 @@ async def run_campaign(campaign_id: str, tenant_id: str):
         pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == phone_uuid, PhoneNumber.tenant_id == tid, PhoneNumber.active == True))
         if not pn or not (pn.capabilities or {}).get('outbound', True):
             return {'status': 'blocked', 'reason': 'PHONE_OUTBOUND_DISABLED'}
+        provider = (pn.provider or 'twilio').strip().lower()
+        if provider not in {'twilio', 'plivo'}:
+            return {'status': 'blocked', 'reason': 'UNSUPPORTED_PROVIDER'}
+        if not _provider_ready(provider):
+            return {'status': 'blocked', 'reason': f'{provider.upper()}_NOT_CONFIGURED'}
         agent = await db.scalar(select(Agent).where(Agent.id == pn.agent_id, Agent.tenant_id == tid, Agent.active == True))
         if not agent or not agent.active_version_id:
             return {'status': 'blocked', 'reason': 'AGENT_NOT_PUBLISHED'}
@@ -65,7 +123,6 @@ async def run_campaign(campaign_id: str, tenant_id: str):
                 campaign.status = 'COMPLETED'
             await db.commit()
             return {'status': 'complete' if campaign.status == 'COMPLETED' else 'waiting', 'launched': 0}
-        client = Client(s.twilio_account_sid, s.twilio_auth_token)
         launched = 0
         for item in rows:
             contact = await db.scalar(select(Contact).where(Contact.id == item.contact_id, Contact.tenant_id == tid))
@@ -85,11 +142,8 @@ async def run_campaign(campaign_id: str, tenant_id: str):
             attempt = CampaignAttempt(tenant_id=tid, campaign_id=cid, contact_id=contact.id, call_id=call.id, state='STARTING')
             db.add(attempt)
             try:
-                base = s.public_base_url.rstrip('/')
-                if not base.startswith('https://'):
-                    raise RuntimeError('PUBLIC_BASE_URL must use HTTPS')
-                tw = client.calls.create(to=contact.phone, from_=pn.e164, url=f'{base}/api/v1/voice/twilio/outbound/{call.id}', method='POST', status_callback=f'{base}/api/v1/voice/twilio/status', status_callback_method='POST', status_callback_event=['initiated', 'ringing', 'answered', 'completed'])
-                call.provider_call_id = tw.sid
+                result = _start_provider_call(provider, call.id, pn.e164, contact.phone)
+                call.provider_call_id = _provider_call_id(result, provider)
                 call.status = 'RINGING'
                 attempt.state = 'STARTED'
                 launched += 1
