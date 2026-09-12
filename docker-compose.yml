@@ -12,7 +12,7 @@ services:
   api:
     build: ./apps/api
     env_file: .env
-    ports: ["8000:8000"]
+    ports: ["8001:8000"]
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
   worker:
@@ -23,9 +23,9 @@ services:
   web:
     image: node:22-alpine
     working_dir: /app
-    environment: {NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1}
+    environment: {NEXT_PUBLIC_API_URL: http://localhost:8001/api/v1}
     volumes: [./apps/web:/app]
-    ports: ["3000:3000"]
+    ports: ["3001:3000"]
     command: sh -c "npm install && npm run dev"
     depends_on: [api]
 volumes: {pgdata: {}}
