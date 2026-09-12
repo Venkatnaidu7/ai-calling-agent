@@ -38,8 +38,9 @@ class RealtimeBridge:
         if self.ws: await self.ws.send(json.dumps({'type':'response.cancel'}))
     async def create_response(self):
         if self.ws: await self.ws.send(json.dumps({'type':'response.create','response':{'output_modalities':['audio']}}))
-    async def tool_result(self,call_id,result):
+    async def tool_result(self,call_id,result,create_response=True):
         if not self.ws: return
-        await self.ws.send(json.dumps({'type':'conversation.item.create','item':{'type':'function_call_output','call_id':call_id,'output':json.dumps(result)}})); await self.create_response()
+        await self.ws.send(json.dumps({'type':'conversation.item.create','item':{'type':'function_call_output','call_id':call_id,'output':json.dumps(result)}}))
+        if create_response: await self.create_response()
     async def close(self):
         if self.ws: await self.ws.close(); self.ws=None
