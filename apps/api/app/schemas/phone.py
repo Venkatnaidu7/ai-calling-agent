@@ -22,6 +22,7 @@ class PhoneNumberUpdate(BaseModel):
 
 class PhoneNumberProvision(BaseModel):
     phone_number: str = Field(min_length=7, max_length=32, pattern=r"^\+[1-9]\d{6,30}$")
+    provider: str = Field(default="twilio", min_length=2, max_length=30)
     agent_id: UUID | None = None
     country: str | None = Field(default=None, min_length=2, max_length=4)
     inbound_enabled: bool = True
