@@ -28,6 +28,14 @@ class PhoneNumberProvision(BaseModel):
     outbound_enabled: bool = True
 
 
+class PlivoNumberAttach(BaseModel):
+    phone_number: str = Field(min_length=7, max_length=32, pattern=r"^\+[1-9]\d{6,30}$")
+    agent_id: UUID | None = None
+    country: str | None = Field(default=None, min_length=2, max_length=4)
+    inbound_enabled: bool = True
+    outbound_enabled: bool = True
+
+
 class PhoneNumberOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
