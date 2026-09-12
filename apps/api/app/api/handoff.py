@@ -103,7 +103,7 @@ async def transfer(call_id: UUID, data: TransferRequest, t=Depends(tenant_id), d
 async def twilio_execute(call_id: UUID, request: Request, db: AsyncSession=Depends(get_db)):
     form=dict(await request.form()); validate_twilio(request,form)
     call=await db.scalar(select(Call).where(Call.id==call_id,Call.provider_call_id==form.get('CallSid')))
-    handoff=await db.scalar(select(CallHandoff).where(CallHandoff.call_id==call_id))
+    handoff=await db.scalar(select(CallHandoff).where(CallHandoff.call_id==call_id, CallHandoff.status=='TRANSFERRING'))
     if not call or not handoff: raise HTTPException(404,'Handoff not found')
     response=VoiceResponse(); dial=Dial(timeout=20,answer_on_bridge=True); dial.number(handoff.destination_phone); response.append(dial)
     await db.commit()
@@ -114,7 +114,7 @@ async def plivo_execute(call_id: UUID, request: Request, db: AsyncSession=Depend
     form=dict(await request.form()); validate_webhook(request,form)
     call_uuid=form.get('CallUUID')
     call=await db.scalar(select(Call).where(Call.id==call_id,Call.provider_call_id==call_uuid))
-    handoff=await db.scalar(select(CallHandoff).where(CallHandoff.call_id==call_id))
+    handoff=await db.scalar(select(CallHandoff).where(CallHandoff.call_id==call_id, CallHandoff.status=='TRANSFERRING'))
     if not call or not handoff: raise HTTPException(404,'Handoff not found')
     response=plivoxml.ResponseElement(); dial=plivoxml.DialElement(); dial.add(plivoxml.NumberElement(handoff.destination_phone)); response.add(dial)
     await db.commit()
