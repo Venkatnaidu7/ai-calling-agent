@@ -50,8 +50,7 @@ async def execute_handoff_tool(call_id, tenant_id, arguments):
         call_uuid=uuid.UUID(str(call_id)); tid=uuid.UUID(str(tenant_id))
         reason=str(arguments.get('reason') or '').strip()[:1000]
         if not reason: return {'ok':False,'code':'REASON_REQUIRED','message':'A handoff reason is required.'}, False
-        routing_group_id=arguments.get('routing_group_id')
-        destination_id=arguments.get('destination_id')
+        routing_group_id=arguments.get('routing_group_id'); destination_id=arguments.get('destination_id')
         rg=uuid.UUID(str(routing_group_id)) if routing_group_id else None
         did=uuid.UUID(str(destination_id)) if destination_id else None
     except (ValueError,TypeError,AttributeError):
@@ -63,7 +62,8 @@ async def execute_handoff_tool(call_id, tenant_id, arguments):
         if not call.provider_call_id: return {'ok':False,'code':'PROVIDER_NOT_CONNECTED','message':'The voice provider is not connected.'}, False
         if not await is_business_hours(db,tid): return {'ok':False,'code':'OUTSIDE_BUSINESS_HOURS','message':'Human support is currently outside business hours.'}, False
         if did:
-            destination=await db.scalar(select(__import__('app.models',fromlist=['TransferDestination']).TransferDestination).where(__import__('app.models',fromlist=['TransferDestination']).TransferDestination.id==did,__import__('app.models',fromlist=['TransferDestination']).TransferDestination.tenant_id==tid))
+            from app.models import TransferDestination
+            destination=await db.scalar(select(TransferDestination).where(TransferDestination.id==did,TransferDestination.tenant_id==tid))
         else:
             destination=await select_destination(db,tid,rg)
         if not destination: return {'ok':False,'code':'NO_AGENT_AVAILABLE','message':'No human support agent is currently available.'}, False
@@ -164,8 +164,7 @@ async def stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None):
                     result,success=await execute_handoff_tool(call_id,call.tenant_id,args)
                     await bridge.tool_result(event.get('call_id'),result,create_response=not success)
                     if success:
-                        await bridge.close()
-                        return
+                        await bridge.close(); return
                 elif kind in {'conversation.item.input_audio_transcription.completed','conversation.item.input_audio_transcription.segment'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
@@ -250,7 +249,8 @@ async def plivo_status(request:Request,db:AsyncSession=Depends(get_db)):
     from app.providers.plivo import validate_webhook
     form=dict(await request.form()); validate_webhook(request,form)
     provider_id=form.get('CallUUID') or form.get('RequestUUID')
-    call=await db.scalar(select(Call).where(or_(Call.provider_call_id==provider_id,call.provider_call_id==form.get('RequestUUID'))))
+    request_uuid=form.get('RequestUUID')
+    call=await db.scalar(select(Call).where(or_(Call.provider_call_id==provider_id,Call.provider_call_id==request_uuid)))
     if not call: return {'ok':True}
     if form.get('CallUUID'): call.provider_call_id=form['CallUUID']
     new_status=STATUS_MAP.get((form.get('CallStatus') or '').lower(),call.status); was_terminal=call.status in TERMINAL_CALL_STATES
@@ -308,14 +308,13 @@ async def plivo_stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None
                     result,success=await execute_handoff_tool(call_id,call.tenant_id,args)
                     await bridge.tool_result(event.get('call_id'),result,create_response=not success)
                     if success:
-                        await bridge.close()
-                        return
+                        await bridge.close(); return
                 elif kind in {'conversation.item.input_audio_transcription.completed','conversation.item.input_audio_transcription.segment'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
                         async with SessionLocal() as db:
                             tr=await db.scalar(select(Transcript).where(Transcript.call_id==call_id,Transcript.tenant_id==call.tenant_id))
-                            if tr: db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker='CUSTOMER',text=text,started_at=event.get('start'),ended_at=event.get('end')); await db.commit()
+                            if tr: db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker='CUSTOMER',text=text,started_at=event.get('start'),ended_at=event.get('end'))); await db.commit()
                 elif kind in {'response.audio_transcript.done','response.output_audio_transcript.done','response.output_text.done'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
