@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.models import HumanAgent, RoutingGroup, TransferDestination, BusinessHours, CallHandoff, PhoneNumber
 
 ACTIVE_STATES = {'AVAILABLE', 'ONLINE', 'READY'}
+HANDOFF_STATES = {'REQUESTED', 'TRANSFERRING', 'CONNECTED', 'FAILED'}
 
 async def select_destination(db: AsyncSession, tenant_id, routing_group_id=None):
     if routing_group_id:
@@ -86,7 +87,7 @@ async def start_transfer(db: AsyncSession, tenant_id, call, destination, reason=
             if not s.plivo_auth_id or not s.plivo_auth_token:
                 raise HTTPException(503, 'Plivo is not configured')
             url = f'{base}/api/v1/handoff/plivo/execute/{call.id}'
-            PlivoClient(s.plivo_auth_id, s.plivo_auth_token).calls.update(call.provider_call_id, legs='aleg', aleg_url=url, aleg_method='POST')
+            PlivoClient(s.plivo_auth_id,s.plivo_auth_token).calls.update(call.provider_call_id, legs='aleg', aleg_url=url, aleg_method='POST')
         else:
             raise HTTPException(400, 'Unsupported voice provider')
     except HTTPException:
@@ -99,4 +100,22 @@ async def start_transfer(db: AsyncSession, tenant_id, call, destination, reason=
     handoff.status = 'TRANSFERRING'
     call.outcome = 'HUMAN_HANDOFF'
     await db.flush()
+    return handoff
+
+async def sync_handoff_state(db: AsyncSession, call, provider_status: str):
+    """Synchronize transfer state from provider callbacks, idempotently."""
+    handoff = await db.scalar(select(CallHandoff).where(CallHandoff.call_id == call.id, CallHandoff.tenant_id == call.tenant_id))
+    if not handoff:
+        return None
+    status = (provider_status or '').upper()
+    if handoff.status == 'FAILED' or handoff.status == 'CONNECTED':
+        return handoff
+    if status in {'ANSWERED', 'IN-PROGRESS', 'IN_PROGRESS'}:
+        handoff.status = 'CONNECTED'
+        handoff.failure_reason = None
+    elif status in {'RINGING', 'EARLY-MEDIA'}:
+        handoff.status = 'TRANSFERRING'
+    elif status in {'COMPLETED', 'BUSY', 'NO-ANSWER', 'NO_ANSWER', 'FAILED', 'CANCELED', 'CANCELLED'}:
+        handoff.status = 'FAILED'
+        handoff.failure_reason = status
     return handoff
