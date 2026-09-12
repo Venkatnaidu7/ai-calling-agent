@@ -2,8 +2,24 @@ import json
 import websockets
 from app.core.config import get_settings
 
+HANDOFF_TOOL = {
+    'type': 'function',
+    'name': 'transfer_to_human',
+    'description': 'Transfer the active caller to a human support agent when the caller requests a person or configured escalation rules require human assistance. Do not use for ordinary questions the AI can safely answer.',
+    'parameters': {
+        'type': 'object',
+        'properties': {
+            'reason': {'type': 'string', 'description': 'Short reason for escalation.'},
+            'routing_group_id': {'type': 'string', 'description': 'Optional routing group UUID.'},
+            'destination_id': {'type': 'string', 'description': 'Optional transfer destination UUID.'},
+        },
+        'required': ['reason'],
+        'additionalProperties': False,
+    },
+}
+
 class RealtimeBridge:
-    """Server-side OpenAI Realtime bridge for Twilio G.711 μ-law audio."""
+    """Server-side OpenAI Realtime bridge for Twilio/Plivo G.711 μ-law audio."""
     def __init__(self, instructions, voice='marin', language='en', tools=None):
         self.instructions=instructions or 'You are a helpful phone assistant.'; self.voice=voice or 'marin'; self.language=language or 'en'; self.tools=tools or []; self.ws=None
     async def connect(self):
