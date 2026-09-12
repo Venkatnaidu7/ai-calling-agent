@@ -1,26 +1,42 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import HumanAgent, RoutingGroup, TransferDestination, BusinessHours
+from app.models import HumanAgent, RoutingGroup, TransferDestination, BusinessHours, CallHandoff
 
-ACTIVE_STATES = {"AVAILABLE", "ONLINE", "READY"}
+ACTIVE_STATES = {'AVAILABLE', 'ONLINE', 'READY'}
 
 async def select_destination(db: AsyncSession, tenant_id, routing_group_id=None):
     if routing_group_id:
         group = await db.scalar(select(RoutingGroup).where(RoutingGroup.id == routing_group_id, RoutingGroup.tenant_id == tenant_id))
         if not group:
             return None
-        agents = (await db.scalars(select(HumanAgent).where(HumanAgent.tenant_id == tenant_id, HumanAgent.status.in_(ACTIVE_STATES)).order_by(HumanAgent.priority.desc(), HumanAgent.updated_at.asc()))).all()
-        return agents[0] if agents else None
+        if group.strategy == 'ROUND_ROBIN':
+            return await db.scalar(select(HumanAgent).where(HumanAgent.tenant_id == tenant_id, HumanAgent.status.in_(ACTIVE_STATES)).order_by(HumanAgent.updated_at.asc(), HumanAgent.priority.desc()).limit(1))
+        return await db.scalar(select(HumanAgent).where(HumanAgent.tenant_id == tenant_id, HumanAgent.status.in_(ACTIVE_STATES)).order_by(HumanAgent.priority.desc(), HumanAgent.updated_at.asc()).limit(1))
     return await db.scalar(select(TransferDestination).where(TransferDestination.tenant_id == tenant_id).order_by(TransferDestination.created_at.asc()).limit(1))
 
 async def is_business_hours(db: AsyncSession, tenant_id, now: datetime | None = None) -> bool:
     bh = await db.scalar(select(BusinessHours).where(BusinessHours.tenant_id == tenant_id))
     if not bh:
         return True
-    now = now or datetime.now(bh.timezone and __import__('zoneinfo').ZoneInfo(bh.timezone))
-    day = now.strftime('%a').lower()
-    rule = (bh.hours or {}).get(day)
-    if not rule:
+    tz = ZoneInfo(bh.timezone or 'UTC')
+    local = now.astimezone(tz) if now else datetime.now(tz)
+    rule = (bh.hours or {}).get(local.strftime('%a').lower())
+    if not isinstance(rule, list):
         return False
-    return any(str(start) <= now.strftime('%H:%M') <= str(end) for start, end in rule if isinstance(rule, list))
+    current = local.strftime('%H:%M')
+    for window in rule:
+        if isinstance(window, (list, tuple)) and len(window) == 2 and str(window[0]) <= current <= str(window[1]):
+            return True
+    return False
+
+async def create_or_get_handoff(db: AsyncSession, tenant_id, call, destination, reason=None):
+    handoff = await db.scalar(select(CallHandoff).where(CallHandoff.call_id == call.id, CallHandoff.tenant_id == tenant_id))
+    if handoff:
+        return handoff
+    provider = (await db.scalar(select(__import__('app.models', fromlist=['PhoneNumber']).PhoneNumber.provider).where(__import__('app.models', fromlist=['PhoneNumber']).PhoneNumber.id == call.phone_number_id))) or 'twilio'
+    handoff = CallHandoff(tenant_id=tenant_id, call_id=call.id, destination_id=getattr(destination, 'id', None), destination_phone=destination.phone, provider=provider, status='REQUESTED', reason=reason)
+    db.add(handoff)
+    await db.flush()
+    return handoff
