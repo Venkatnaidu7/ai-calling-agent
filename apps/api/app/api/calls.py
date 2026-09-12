@@ -8,6 +8,7 @@ from plivo import RestClient as PlivoClient
 from app.db.session import get_db
 from app.api.deps import tenant_id
 from app.models import Agent, AgentVersion, Call, Contact, PhoneNumber
+from app.services.billing import enforce_call_limit
 from app.services.compliance import check_outbound
 from app.core.config import get_settings
 from app.providers.plivo import public_url as plivo_public_url
@@ -84,6 +85,7 @@ async def outbound(contact_id: UUID, phone_number_id: UUID, t=Depends(tenant_id)
     s = get_settings()
     if not s.outbound_enabled: raise HTTPException(403, 'Outbound calling is disabled')
     tid = UUID(t)
+    await enforce_call_limit(db, tid)
     c = await db.scalar(select(Contact).where(Contact.id == contact_id, Contact.tenant_id == tid))
     pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == phone_number_id, PhoneNumber.tenant_id == tid))
     if not c or not pn: raise HTTPException(404, 'Contact or phone number not found')
@@ -102,30 +104,23 @@ async def outbound(contact_id: UUID, phone_number_id: UUID, t=Depends(tenant_id)
     try:
         if provider == 'plivo':
             result = plivo_client().calls.create(
-                from_=pn.e164,
-                to_=c.phone,
-                answer_url=public_url(f'/api/v1/voice/plivo/outbound/{call.id}'),
-                answer_method='POST',
-                ring_url=public_url('/api/v1/voice/plivo/ring'),
-                ring_method='POST',
-                hangup_url=public_url('/api/v1/voice/plivo/status'),
-                hangup_method='POST',
+                from_=pn.e164, to_=c.phone,
+                answer_url=public_url(f'/api/v1/voice/plivo/outbound/{call.id}'), answer_method='POST',
+                ring_url=public_url('/api/v1/voice/plivo/ring'), ring_method='POST',
+                hangup_url=public_url('/api/v1/voice/plivo/status'), hangup_method='POST',
             )
             request_uuid = getattr(result, 'request_uuid', None) or (result.get('request_uuid') if isinstance(result, dict) else None)
             if not request_uuid: raise RuntimeError('Plivo did not return a request UUID')
-            call.provider_call_id = request_uuid
-            call.status = 'RINGING'
+            call.provider_call_id = request_uuid; call.status = 'RINGING'
         else:
             if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
             url = public_url(f'/api/v1/voice/twilio/outbound/{call.id}')
             status_url = public_url('/api/v1/voice/twilio/status')
             tw = twilio_client().calls.create(to=c.phone, from_=pn.e164, url=url, method='POST', status_callback=status_url, status_callback_method='POST', status_callback_event=['initiated', 'ringing', 'answered', 'completed'])
-            call.provider_call_id = tw.sid
-            call.status = 'RINGING'
+            call.provider_call_id = tw.sid; call.status = 'RINGING'
     except HTTPException:
         await db.rollback(); raise
     except Exception as exc:
-        await db.rollback()
-        raise HTTPException(502, f'Unable to start {provider} call: {exc}')
+        await db.rollback(); raise HTTPException(502, f'Unable to start {provider} call: {exc}')
     await db.commit()
     return {'call_id': str(call.id), 'provider_call_id': call.provider_call_id, 'provider': provider, 'status': call.status}
