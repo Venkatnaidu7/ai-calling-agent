@@ -858,7 +858,3 @@ Before pushing:
 6. Check the GitHub Actions result.
 
 ---
-
-# 📄 License
-
-Add the project's license before public distribution.
