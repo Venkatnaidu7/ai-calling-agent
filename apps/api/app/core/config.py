@@ -7,11 +7,11 @@ class Settings(BaseSettings):
     api_host: str = '0.0.0.0'
     api_port: int = 8000
     secret_key: str = 'change-me'
-    database_url: str = 'postgresql+asyncpg://voice:voice@localhost:5432/voice'
-    redis_url: str = 'redis://localhost:6379/0'
-    public_base_url: str = 'http://localhost:8000'
-    frontend_url: str = 'http://localhost:3000'
-    cors_origins: str = 'http://localhost:3000'
+    database_url: str = 'postgresql+asyncpg://voice:voice@localhost:5433/voice'
+    redis_url: str = 'redis://localhost:6380/0'
+    public_base_url: str = 'http://localhost:8001'
+    frontend_url: str = 'http://localhost:3001'
+    cors_origins: str = 'http://localhost:3001'
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_region: str = 'us1'
