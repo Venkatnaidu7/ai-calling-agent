@@ -44,6 +44,32 @@ def scheduled_start(schedule: dict | None):
         return None
 
 
+def provider_ready(provider: str, settings) -> bool:
+    provider = provider.strip().lower()
+    if provider == 'twilio':
+        return bool(settings.twilio_account_sid and settings.twilio_auth_token)
+    if provider == 'plivo':
+        return bool(settings.plivo_auth_id and settings.plivo_auth_token)
+    return False
+
+
+async def campaign_phone(campaign: Campaign, tenant: str, db: AsyncSession) -> PhoneNumber:
+    pid = phone_id(campaign)
+    if not pid:
+        raise HTTPException(409, 'Campaign has no phone number')
+    pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == pid, PhoneNumber.tenant_id == UUID(tenant), PhoneNumber.active == True))
+    if not pn:
+        raise HTTPException(409, 'Campaign phone number is not active')
+    provider = (pn.provider or 'twilio').strip().lower()
+    if provider not in {'twilio', 'plivo'}:
+        raise HTTPException(400, f'Unsupported voice provider: {provider}')
+    if not (pn.capabilities or {}).get('outbound', True):
+        raise HTTPException(403, 'Outbound calling is disabled for this phone number')
+    if not provider_ready(provider, get_settings()):
+        raise HTTPException(503, f'{provider.title()} is not configured')
+    return pn
+
+
 @router.get('', response_model=list[CampaignOut])
 async def list_campaigns(t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
     rows = (await db.scalars(select(Campaign).where(Campaign.tenant_id == UUID(t)).order_by(Campaign.created_at.desc()))).all()
@@ -56,6 +82,10 @@ async def create_campaign(data: CampaignCreate, t=Depends(tenant_id), db: AsyncS
     pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == data.phone_number_id, PhoneNumber.tenant_id == tid))
     if not pn:
         raise HTTPException(404, 'Phone number not found')
+    if (pn.provider or 'twilio').strip().lower() not in {'twilio', 'plivo'}:
+        raise HTTPException(400, f'Unsupported voice provider: {pn.provider}')
+    if not (pn.capabilities or {}).get('outbound', True):
+        raise HTTPException(403, 'Outbound calling is disabled for this phone number')
     schedule = dict(data.schedule)
     schedule['phone_number_id'] = str(data.phone_number_id)
     x = Campaign(tenant_id=tid, name=data.name, schedule=schedule, retry_policy=data.retry_policy, concurrency=data.concurrency, status='DRAFT')
@@ -82,11 +112,11 @@ async def campaign_stats(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSessi
 
 @router.post('/{campaign_id}/start', response_model=CampaignOut)
 async def start_campaign(campaign_id: UUID, t=Depends(tenant_id), db: AsyncSession = Depends(get_db)):
-    x = await get_campaign(campaign_id, t, db); s = get_settings()
+    x = await get_campaign(campaign_id, t, db)
     if x.status in {'ACTIVE', 'SCHEDULED'}: return as_campaign(x)
-    if not phone_id(x): raise HTTPException(409, 'Campaign has no phone number')
+    pn = await campaign_phone(x, t, db)
+    s = get_settings()
     if not s.outbound_enabled: raise HTTPException(403, 'Outbound calling is disabled')
-    if not s.twilio_account_sid or not s.twilio_auth_token: raise HTTPException(503, 'Twilio is not configured')
     count = await db.scalar(select(func.count(CampaignContact.id)).where(CampaignContact.campaign_id == x.id, CampaignContact.state.in_(['QUEUED', 'RETRY']))) or 0
     if count == 0: raise HTTPException(409, 'Campaign has no callable contacts queued')
     start_at = scheduled_start(x.schedule)
@@ -126,6 +156,8 @@ async def update_campaign(campaign_id: UUID, data: CampaignUpdate, t=Depends(ten
     if 'phone_number_id' in changes:
         pn = await db.scalar(select(PhoneNumber).where(PhoneNumber.id == changes['phone_number_id'], PhoneNumber.tenant_id == UUID(t)))
         if not pn: raise HTTPException(404, 'Phone number not found')
+        if (pn.provider or 'twilio').strip().lower() not in {'twilio', 'plivo'}:
+            raise HTTPException(400, f'Unsupported voice provider: {pn.provider}')
         schedule = dict(x.schedule or {}); schedule['phone_number_id'] = str(changes.pop('phone_number_id')); changes['schedule'] = schedule
     for k, v in changes.items(): setattr(x, k, v)
     await db.commit(); await db.refresh(x)
