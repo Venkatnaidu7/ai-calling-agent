@@ -1,5 +1,3 @@
-import pytest
-
 from app.api.voice import STATUS_MAP, TERMINAL_CALL_STATES
 
 
