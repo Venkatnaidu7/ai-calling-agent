@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 from twilio.rest import Client as TwilioClient
@@ -10,6 +11,8 @@ from app.models import HumanAgent, RoutingGroup, TransferDestination, BusinessHo
 
 ACTIVE_STATES = {'AVAILABLE', 'ONLINE', 'READY'}
 HANDOFF_STATES = {'REQUESTED', 'TRANSFERRING', 'CONNECTED', 'FAILED'}
+VOICE_PROVIDERS = {'twilio', 'plivo'}
+
 
 async def select_destination(db: AsyncSession, tenant_id, routing_group_id=None):
     if routing_group_id:
@@ -59,7 +62,6 @@ async def is_business_hours(db: AsyncSession, tenant_id, now: datetime | None = 
     today_rule = hours.get(local.strftime('%a').lower())
     if _window_contains(today_rule, current):
         return True
-    # An overnight window belongs to the previous calendar day as well.
     previous = local - timedelta(days=1)
     previous_rule = hours.get(previous.strftime('%a').lower())
     if isinstance(previous_rule, dict):
@@ -81,13 +83,22 @@ async def create_or_get_handoff(db: AsyncSession, tenant_id, call, destination, 
     handoff = await db.scalar(select(CallHandoff).where(CallHandoff.call_id == call.id, CallHandoff.tenant_id == tenant_id))
     if handoff:
         return handoff
-    provider = await db.scalar(select(PhoneNumber.provider).where(PhoneNumber.id == call.phone_number_id, PhoneNumber.tenant_id == tenant_id)) or 'twilio'
-    # HumanAgent IDs are not TransferDestination foreign keys; keep destination_id
-    # only when the selected destination is an actual TransferDestination row.
+    provider = await db.scalar(select(PhoneNumber.provider).where(PhoneNumber.id == call.phone_number_id, PhoneNumber.tenant_id == tenant_id))
+    provider = (provider or '').lower()
+    if provider not in VOICE_PROVIDERS:
+        raise HTTPException(400, 'Unsupported voice provider')
     destination_id = destination.id if isinstance(destination, TransferDestination) else None
     handoff = CallHandoff(tenant_id=tenant_id, call_id=call.id, destination_id=destination_id, destination_phone=destination.phone, provider=provider, status='REQUESTED', reason=reason)
     db.add(handoff)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Concurrent API/model-tool requests for the same call must be idempotent.
+        await db.rollback()
+        handoff = await db.scalar(select(CallHandoff).where(CallHandoff.call_id == call.id, CallHandoff.tenant_id == tenant_id))
+        if handoff:
+            return handoff
+        raise
     return handoff
 
 
@@ -95,6 +106,8 @@ async def start_transfer(db: AsyncSession, tenant_id, call, destination, reason=
     handoff = await create_or_get_handoff(db, tenant_id, call, destination, reason)
     if handoff.status in {'TRANSFERRING', 'CONNECTED'}:
         return handoff
+    if handoff.status == 'FAILED':
+        raise HTTPException(409, 'Human handoff has already failed for this call')
     if call.status not in {'QUEUED', 'RINGING', 'IN_PROGRESS'}:
         raise HTTPException(409, 'Call is not active')
     if not call.provider_call_id:
@@ -136,7 +149,7 @@ async def sync_handoff_state(db: AsyncSession, call, provider_status: str):
     handoff = await db.scalar(select(CallHandoff).where(CallHandoff.call_id == call.id, CallHandoff.tenant_id == call.tenant_id))
     if not handoff:
         return None
-    status = (provider_status or '').upper()
+    status = (provider_status or '').upper().replace(' ', '-')
     if handoff.status == 'FAILED' or handoff.status == 'CONNECTED':
         return handoff
     if status in {'ANSWERED', 'IN-PROGRESS', 'IN_PROGRESS'}:
