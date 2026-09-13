@@ -18,8 +18,6 @@ def upgrade():
         sa.Column('processed_at', sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint('stripe_event_id', name='uq_billing_events_stripe_event_id'),
     )
-    op.create_index('ix_billing_events_stripe_event_id', 'billing_events', ['stripe_event_id'], unique=True)
 
 def downgrade():
-    op.drop_index('ix_billing_events_stripe_event_id', table_name='billing_events')
     op.drop_table('billing_events')
