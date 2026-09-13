@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     cors_origins: str = 'http://localhost:3001'
     trusted_hosts: str = 'localhost,127.0.0.1'
     request_max_bytes: int = 1048576
+    redis_password: str | None = None
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_region: str = 'us1'
