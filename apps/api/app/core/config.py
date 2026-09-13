@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     public_base_url: str = 'http://localhost:8001'
     frontend_url: str = 'http://localhost:3001'
     cors_origins: str = 'http://localhost:3001'
+    trusted_hosts: str = 'localhost,127.0.0.1'
+    request_max_bytes: int = 1048576
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_region: str = 'us1'
