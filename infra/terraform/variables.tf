@@ -11,14 +11,14 @@ variable "database_name" { type = string default = "voice" }
 variable "database_username" { type = string default = "voice" }
 variable "database_password" { type = string sensitive = true }
 variable "redis_auth_token" { type = string sensitive = true }
-variable "secret_key_arn" { type = string }
-variable "openai_api_key_arn" { type = string }
-variable "twilio_account_sid_arn" { type = string default = "" }
-variable "twilio_auth_token_arn" { type = string default = "" }
-variable "plivo_auth_id_arn" { type = string default = "" }
-variable "plivo_auth_token_arn" { type = string default = "" }
-variable "stripe_secret_key_arn" { type = string }
-variable "stripe_webhook_secret_arn" { type = string }
+variable "secret_key" { type = string description = "Secrets Manager/SSM ARN for SECRET_KEY" }
+variable "openai_api_key" { type = string description = "Secrets Manager/SSM ARN for OPENAI_API_KEY" }
+variable "twilio_account_sid" { type = string default = "" description = "Secrets Manager/SSM ARN" }
+variable "twilio_auth_token" { type = string default = "" description = "Secrets Manager/SSM ARN" }
+variable "plivo_auth_id" { type = string default = "" description = "Secrets Manager/SSM ARN" }
+variable "plivo_auth_token" { type = string default = "" description = "Secrets Manager/SSM ARN" }
+variable "stripe_secret_key" { type = string description = "Secrets Manager/SSM ARN" }
+variable "stripe_webhook_secret" { type = string description = "Secrets Manager/SSM ARN" }
 variable "public_base_url" { type = string }
 variable "frontend_url" { type = string }
 variable "api_cpu" { type = number default = 512 }
