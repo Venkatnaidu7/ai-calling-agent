@@ -20,6 +20,7 @@ from app.api.billing import router as billing_router
 from app.api.campaigns import router as campaigns_router
 from app.api.intelligence import router as intelligence_router
 from app.api.handoff import router as handoff_router
+from app.api.security import router as security_router
 
 @asynccontextmanager
 async def lifespan(app):
@@ -36,7 +37,7 @@ async def request_context(request:Request,call_next):
     except Exception:
         return JSONResponse(status_code=500,content={'error':{'code':'INTERNAL_ERROR','message':'Internal server error.','request_id':rid}},headers={'X-Request-ID':rid})
 
-for r in [auth_router,agents_router,phone_numbers_router,contacts_router,contact_consent_router,contact_import_router,voice_router,product_router,calls_router,analytics_router,billing_router,campaigns_router,intelligence_router,handoff_router]:
+for r in [auth_router,agents_router,phone_numbers_router,contacts_router,contact_consent_router,contact_import_router,voice_router,product_router,calls_router,analytics_router,billing_router,campaigns_router,intelligence_router,handoff_router,security_router]:
     app.include_router(r,prefix='/api/v1')
 
 @app.get('/health')
