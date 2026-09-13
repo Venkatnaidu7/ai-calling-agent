@@ -164,13 +164,16 @@ async def stream(websocket:WebSocket,call_id:uuid.UUID,token:str|None=None):
                                 if kind.endswith('.segment') and event.get('id'):
                                     existing=await db.scalar(select(TranscriptSegment).where(TranscriptSegment.transcript_id==tr.id,TranscriptSegment.tenant_id==call.tenant_id,TranscriptSegment.text==text,TranscriptSegment.started_at==event.get('start')))
                                     if existing: continue
-                                db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker=event.get('speaker') or 'CUSTOMER',text=text,started_at=event.get('start'),ended_at=event.get('end')); await db.commit()
+                                db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker=event.get('speaker') or 'CUSTOMER',text=text,started_at=event.get('start'),ended_at=event.get('end')))
+                                await db.commit()
                 elif kind in {'response.audio_transcript.done','response.output_audio_transcript.done','response.output_text.done'}:
                     text=event.get('transcript') or event.get('text')
                     if text:
                         async with SessionLocal() as db:
                             tr=await db.scalar(select(Transcript).where(Transcript.call_id==call_id,Transcript.tenant_id==call.tenant_id))
-                            if tr: db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker='ASSISTANT',text=text)); await db.commit()
+                            if tr:
+                                db.add(TranscriptSegment(tenant_id=call.tenant_id,transcript_id=tr.id,speaker='ASSISTANT',text=text))
+                                await db.commit()
                 elif kind=='input_audio_buffer.speech_started': await bridge.cancel()
                 elif kind=='error': logger.error('realtime_error',extra={'call_id':str(call_id),'error':event.get('error')})
         while True:
