@@ -1,0 +1,32 @@
+name: Production Validate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Terraform format check
+        working-directory: infra/terraform
+        run: terraform fmt -check -recursive
+      - name: Terraform init
+        working-directory: infra/terraform
+        run: terraform init -backend=false
+      - name: Terraform validate
+        working-directory: infra/terraform
+        run: terraform validate
+
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -t ai-calling-agent-api:ci apps/api
+      - name: Build web image
+        run: docker build --build-arg NEXT_PUBLIC_API_URL=http://localhost:8001/api/v1 -t ai-calling-agent-web:ci apps/web
