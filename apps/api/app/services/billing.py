@@ -50,10 +50,11 @@ async def record_voice_minutes(db: AsyncSession, tenant_id: UUID, seconds: int |
     if seconds is None or seconds <= 0:
         return None
     start, end = current_period()
+    minutes = round(seconds / 60.0, 4)
     record = UsageRecord(
         tenant_id=tenant_id,
         metric='voice_minutes',
-        quantity=round(seconds / 60.0, 4),
+        quantity=minutes,
         period_start=start,
         period_end=end,
     )
