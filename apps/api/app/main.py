@@ -43,7 +43,10 @@ for r in [auth_router,agents_router,phone_numbers_router,contacts_router,contact
 async def health(): return {'status':'ok','service':s.app_name}
 @app.get('/liveness')
 async def liveness(): return {'status':'alive'}
-@app.get('/readiness')
-async def readiness():
+async def _readiness_check():
     async with engine.connect() as c: await c.execute(text('SELECT 1'))
     return {'status':'ready'}
+@app.get('/readiness')
+async def readiness(): return await _readiness_check()
+@app.get('/ready')
+async def ready(): return await _readiness_check()
