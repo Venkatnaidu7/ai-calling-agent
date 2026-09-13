@@ -19,9 +19,10 @@ Set these through the deployment secret manager, never in git:
 - `SECRET_KEY` (random, unique, >=32 characters)
 - `DATABASE_URL`
 - `REDIS_URL`
+- `REDIS_PASSWORD`
 - `PUBLIC_BASE_URL` (stable HTTPS URL)
 - `FRONTEND_URL` (stable HTTPS URL)
-- `CORS_ORIGINS` (exact frontend origin(s))
+- `CORS_ORIGINS` and `TRUSTED_HOSTS` restricted to production domains
 - Twilio credentials and/or Plivo credentials as required
 - `OPENAI_API_KEY`
 - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` when billing is enabled
@@ -33,11 +34,16 @@ Set these through the deployment secret manager, never in git:
 2. Provision private PostgreSQL/Redis and networking.
 3. Inject secrets.
 4. Run `alembic upgrade head` as a release migration job.
-5. Deploy API and worker.
+5. Deploy API and worker replicas.
 6. Verify `/health`, `/liveness`, and `/ready`.
-7. Deploy frontend.
-8. Configure Twilio/Plivo callbacks to the stable HTTPS/WSS endpoints.
+7. Deploy frontend over HTTPS.
+8. Configure Twilio/Plivo callbacks to stable HTTPS/WSS endpoints.
 9. Configure Stripe webhook delivery to `/api/v1/billing/stripe/webhook`.
-10. Run smoke tests before enabling outbound calling.
+10. Run authenticated API, billing, inbound voice and handoff smoke tests.
+11. Enable outbound calling only after consent, DNC and billing controls are verified.
+
+## Security
+
+Never commit `.env.production` or real provider credentials. Keep PostgreSQL and Redis private, terminate TLS at the public edge, rotate secrets, and keep recording disabled unless the tenant's lawful policy permits it.
 
 Never use the Cloudflare Quick Tunnel for production traffic; it is suitable only for temporary development testing.
