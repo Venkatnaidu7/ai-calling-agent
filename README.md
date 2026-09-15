@@ -2,7 +2,11 @@
 
 > Production-oriented, multi-tenant AI phone calling platform for inbound and outbound voice conversations.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/Venkatnaidu7/ai-calling-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Venkatnaidu7/ai-calling-agent/actions/workflows/ci.yml)
+[![Python: 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org/)
+[![TypeScript: Latest](https://img.shields.io/badge/TypeScript-Latest-blue)](https://www.typescriptlang.org/)
+[![Docker: Ready](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/)
 
 Built with **FastAPI, Next.js, PostgreSQL, Redis/Celery, Twilio Voice Media Streams, OpenAI Realtime, Stripe, Docker/Podman, and AWS/Terraform foundations**.
 
@@ -179,7 +183,7 @@ If `podman compose` is not available on your distribution, install the `podman-c
 podman-compose --version
 ```
 
-> **Recommendation:** Prefer your Linux distribution's packaged Podman Compose provider when available. Podman Compose implementations can differ slightly by version, so use the command supported by your installed provider consistently.
+> **Recommendation:** Prefer your Linux distribution's packaged Podman Compose provider when available. Podman Compose implementations can differ slightly by version, so use the command supported[...]
 
 ### 1. Install Podman
 
@@ -208,7 +212,7 @@ Then:
 podman-compose --version
 ```
 
-> Package names and recommended installation methods vary between Linux distributions. For Fedora, RHEL-compatible distributions, Arch, and other systems, use the official packages for that distribution.
+> Package names and recommended installation methods vary between Linux distributions. For Fedora, RHEL-compatible distributions, Arch, and other systems, use the official packages for that distr[...]
 
 ### 2. Clone the repository
 
@@ -352,7 +356,7 @@ podman compose up --build -d
 podman compose exec api alembic upgrade head
 ```
 
-> ⚠️ `down -v` removes local PostgreSQL/Redis volumes and therefore deletes local database data. Review your Podman Compose provider's behavior before using it on any environment containing data you need.
+> ⚠️ `down -v` removes local PostgreSQL/Redis volumes and therefore deletes local database data. Review your Podman Compose provider's behavior before using it on any environment containing d[...]
 
 ### Podman rootless notes
 
@@ -404,7 +408,7 @@ podman-compose --version
 podman-compose config
 ```
 
-> If a Compose feature is not supported by the installed Podman Compose implementation, do not modify the application blindly. Check the provider version and logs first; the same `docker-compose.yml` may require a small runtime-specific adjustment.
+> If a Compose feature is not supported by the installed Podman Compose implementation, do not modify the application blindly. Check the provider version and logs first; the same `docker-compose.[...]
 
 ---
 
@@ -792,7 +796,7 @@ lsof -i :8000
 
 # 🔒 Security & Production
 
-The project contains a production-oriented foundation including tenant isolation, RBAC, authentication, agent/version management, API keys, audit logs, Twilio signature validation, consent/compliance records, outbound safety controls, usage accounting, billing foundation, request IDs, health/readiness endpoints, and AWS/Terraform foundations.
+The project contains a production-oriented foundation including tenant isolation, RBAC, authentication, agent/version management, API keys, audit logs, Twilio signature validation, consent/compli[...]
 
 Before production launch, configure and validate:
 
