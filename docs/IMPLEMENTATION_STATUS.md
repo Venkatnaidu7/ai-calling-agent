@@ -12,7 +12,7 @@
 - Redis/Celery worker foundation
 - Analytics and Stripe webhook foundation
 - Next.js dashboard
-- Docker Compose, CI and AWS/Terraform foundation
+- Docker Compose, CI and DigitalOcean/Terraform foundation
 
 ## Required before production launch
 

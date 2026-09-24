@@ -1,0 +1,7 @@
+do_token = "replace-with-a-digitalocean-api-token"
+environment = "staging"
+region = "blr1"
+droplet_size = "s-2vcpu-4gb"
+ssh_key_ids = ["12345678"]
+allowed_ssh_cidrs = ["203.0.113.10/32"]
+domain = "voice.example.com"
