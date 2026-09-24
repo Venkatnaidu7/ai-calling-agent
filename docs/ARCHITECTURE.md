@@ -12,4 +12,4 @@ Core services:
 - Twilio Voice Media Streams
 - OpenAI Realtime
 - Stripe webhook foundation
-- AWS/Terraform deployment foundation
+- DigitalOcean/Terraform deployment foundation with Cloudflare edge DNS/HTTPS
