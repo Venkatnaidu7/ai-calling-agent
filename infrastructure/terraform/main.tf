@@ -1,6 +1,23 @@
-terraform { required_version=">= 1.8.0" required_providers { aws={source="hashicorp/aws",version="~> 6.0"} } }
-provider "aws" { region=var.aws_region }
-resource "aws_s3_bucket" "private" { bucket="ai-voice-${var.environment}-private-${data.aws_caller_identity.current.account_id}" }
-resource "aws_s3_bucket_public_access_block" "private" { bucket=aws_s3_bucket.private.id;block_public_acls=true;block_public_policy=true;ignore_public_acls=true;restrict_public_buckets=true }
-resource "aws_secretsmanager_secret" "app" { name="ai-voice/${var.environment}/app" }
-data "aws_caller_identity" "current" {}
+locals {
+  name = "ai-calling-${var.environment}"
+}
+resource "digitalocean_droplet" "app" {
+  name = local.name
+  region = var.region
+  size = var.droplet_size
+  image = "ubuntu-24-04-x64"
+  ssh_keys = var.ssh_key_ids
+  monitoring = true
+  backups = true
+  tags = ["ai-calling-agent", var.environment]
+}
+resource "digitalocean_firewall" "app" {
+  name = "${local.name}-firewall"
+  droplet_ids = [digitalocean_droplet.app.id]
+  inbound_rule { protocol = "tcp" port_range = "22" source_addresses = var.allowed_ssh_cidrs }
+  inbound_rule { protocol = "tcp" port_range = "80" source_addresses = ["0.0.0.0/0", "::/0"] }
+  inbound_rule { protocol = "tcp" port_range = "443" source_addresses = ["0.0.0.0/0", "::/0"] }
+  outbound_rule { protocol = "tcp" port_range = "1-65535" destination_addresses = ["0.0.0.0/0", "::/0"] }
+  outbound_rule { protocol = "udp" port_range = "1-65535" destination_addresses = ["0.0.0.0/0", "::/0"] }
+  outbound_rule { protocol = "icmp" destination_addresses = ["0.0.0.0/0", "::/0"] }
+}
