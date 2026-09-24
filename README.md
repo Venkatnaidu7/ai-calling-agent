@@ -8,7 +8,7 @@
 [![TypeScript: Latest](https://img.shields.io/badge/TypeScript-Latest-blue)](https://www.typescriptlang.org/)
 [![Docker: Ready](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/)
 
-Built with **FastAPI, Next.js, PostgreSQL, Redis/Celery, Twilio Voice Media Streams, OpenAI Realtime, Stripe, Docker/Podman, and AWS/Terraform foundations**.
+Built with **FastAPI, Next.js, PostgreSQL, Redis/Celery, Twilio Voice Media Streams, OpenAI Realtime, Stripe, Docker/Podman, DigitalOcean/Terraform, and Cloudflare**.
 
 ---
 
@@ -643,7 +643,7 @@ Phone → Twilio → FastAPI Voice Gateway → OpenAI Realtime
 - **Realtime AI:** OpenAI Realtime
 - **Billing:** Stripe
 - **Containers:** Docker + Docker Compose or Podman + Podman Compose
-- **Cloud foundation:** AWS + Terraform
+- **Cloud deployment:** DigitalOcean + Terraform + Cloudflare
 - **CI:** GitHub Actions
 
 ---
@@ -666,7 +666,7 @@ ai-calling-agent/
 │   │   └── tests/            # Tests
 │   └── web/                  # Next.js dashboard
 ├── docs/                     # Architecture/security/deployment
-├── infrastructure/terraform/ # AWS foundation
+├── infrastructure/terraform/ # DigitalOcean foundation
 ├── scripts/
 ├── .github/workflows/        # CI
 ├── docker-compose.yml
@@ -808,7 +808,7 @@ Before production launch, configure and validate:
 - Provider webhooks
 - Calling consent and applicable laws
 - Recording/retention policy
-- Production AWS infrastructure
+- Production DigitalOcean infrastructure
 - End-to-end voice testing
 - Container runtime hardening
 - Rootless/container permissions where appropriate
