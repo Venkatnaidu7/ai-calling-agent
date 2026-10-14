@@ -38,6 +38,12 @@ type ActionItem = {
 
 type Intelligence = {
   call_id: string
+  job?: {
+    status?: string
+    attempts?: number
+    last_error?: string | null
+    updated_at?: string | null
+  } | null
   transcript?: { status?: string; segments?: TranscriptSegment[] }
   summary?: {
     summary?: string | null
@@ -144,7 +150,7 @@ export default function CallDetailsPage() {
       if (!response.ok) {
         throw new Error(typeof payload?.detail === 'string' ? payload.detail : 'Unable to queue intelligence processing.')
       }
-      setNotice(`Intelligence processing queued. Status: ${displayValue(payload?.status)}. Refresh this page to see updated results.`)
+      setNotice(`Intelligence processing queued. Status: ${displayValue(payload?.status)}. Use Refresh details to check progress.`)
       await loadCall()
     } catch (cause) {
       setIntelligenceError(cause instanceof Error ? cause.message : 'Unable to queue intelligence processing.')
@@ -156,6 +162,7 @@ export default function CallDetailsPage() {
   const summary = intelligence?.summary
   const segments = intelligence?.transcript?.segments ?? []
   const actions = intelligence?.action_items ?? []
+  const job = intelligence?.job
 
   return (
     <main style={{ maxWidth: 1000, margin: '0 auto', padding: 24, fontFamily: 'system-ui, sans-serif' }}>
@@ -207,6 +214,8 @@ export default function CallDetailsPage() {
             {intelligenceError && <p role="alert" style={{ color: '#b91c1c' }}>{intelligenceError}</p>}
             {intelligence && (
               <>
+                <p><strong>Processing status:</strong> {job?.status || 'NOT_QUEUED'} · <strong>Attempts:</strong> {job?.attempts ?? 0}</p>
+                {job?.last_error && <p role="alert" style={{ color: '#b91c1c' }}>Last processing error: {job.last_error}</p>}
                 <p><strong>Transcript status:</strong> {intelligence.transcript?.status || 'NOT_STARTED'}</p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
                   <Field label="Intent" value={displayValue(summary?.intent)} />
