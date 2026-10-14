@@ -1,0 +1,1 @@
+Phase 6 E2E is ready for real-phone validation. Automated bridge tests cover provider connection, PCMU/VAD session configuration, audio forwarding, response creation, tool output, and missing-key failure. Real-phone validation requires runtime credentials and public HTTPS/WSS.

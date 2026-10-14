@@ -1,0 +1,1 @@
+Phase 6 E2E final acceptance requires a real inbound and outbound phone call through Twilio and OpenAI Realtime. Automated CI/contract tests are separate and must pass first.
