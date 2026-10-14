@@ -29,12 +29,10 @@ type TranscriptSegment = {
 
 type ActionItem = {
   id?: string
-  title?: string
-  description?: string
-  action?: string
+  description: string
   status?: string
   owner?: string | null
-  due_at?: string | null
+  due_date?: string | null
   created_at?: string | null
 }
 
@@ -47,6 +45,7 @@ type Intelligence = {
     intent?: string | null
     outcome?: string | null
     next_action?: string | null
+    follow_up_required?: boolean | null
     [key: string]: unknown
   } | null
   action_items?: ActionItem[]
@@ -98,10 +97,7 @@ export default function CallDetailsPage() {
     setIntelligenceError('')
     const headers = { Authorization: `Bearer ${token}` }
     try {
-      const response = await fetch(`${API}/calls/${encodeURIComponent(callId)}`, {
-        headers,
-        cache: 'no-store',
-      })
+      const response = await fetch(`${API}/calls/${encodeURIComponent(callId)}`, { headers, cache: 'no-store' })
       const payload = await response.json().catch(() => null)
       if (!response.ok) {
         throw new Error(typeof payload?.detail === 'string' ? payload.detail : 'Unable to load call details.')
@@ -109,10 +105,7 @@ export default function CallDetailsPage() {
       setCall(payload as Call)
 
       try {
-        const intelligenceResponse = await fetch(`${API}/calls/${encodeURIComponent(callId)}/intelligence`, {
-          headers,
-          cache: 'no-store',
-        })
+        const intelligenceResponse = await fetch(`${API}/calls/${encodeURIComponent(callId)}/intelligence`, { headers, cache: 'no-store' })
         const intelligencePayload = await intelligenceResponse.json().catch(() => null)
         if (!intelligenceResponse.ok) {
           throw new Error(typeof intelligencePayload?.detail === 'string' ? intelligencePayload.detail : 'Unable to load call intelligence.')
@@ -151,7 +144,7 @@ export default function CallDetailsPage() {
       if (!response.ok) {
         throw new Error(typeof payload?.detail === 'string' ? payload.detail : 'Unable to queue intelligence processing.')
       }
-      setNotice(`Intelligence processing queued. Status: ${displayValue(payload?.status)}`)
+      setNotice(`Intelligence processing queued. Status: ${displayValue(payload?.status)}. Refresh this page to see updated results.`)
       await loadCall()
     } catch (cause) {
       setIntelligenceError(cause instanceof Error ? cause.message : 'Unable to queue intelligence processing.')
@@ -220,6 +213,7 @@ export default function CallDetailsPage() {
                   <Field label="Sentiment" value={displayValue(summary?.sentiment)} />
                   <Field label="Detected outcome" value={displayValue(summary?.outcome)} />
                   <Field label="Next action" value={displayValue(summary?.next_action)} />
+                  <Field label="Follow-up required" value={displayValue(summary?.follow_up_required)} />
                 </div>
                 <h3>Summary</h3>
                 <p style={{ whiteSpace: 'pre-wrap' }}>{displayValue(summary?.summary)}</p>
@@ -242,11 +236,10 @@ export default function CallDetailsPage() {
                 {actions.length === 0 ? <p>No follow-up actions are recorded yet.</p> : (
                   <ul>
                     {actions.map((item, index) => (
-                      <li key={item.id || `${item.title || item.action || 'action'}-${index}`} style={{ marginBottom: 10 }}>
-                        <strong>{item.title || item.action || 'Follow-up action'}</strong>
-                        {item.description && <div>{item.description}</div>}
+                      <li key={item.id || `${item.description || 'action'}-${index}`} style={{ marginBottom: 10 }}>
+                        <strong>{item.description}</strong>
                         <div style={{ color: '#6b7280', fontSize: 12 }}>
-                          {item.status || 'Status unavailable'}{item.due_at ? ` · Due ${formatDate(item.due_at)}` : ''}
+                          {item.owner ? `Owner: ${item.owner} · ` : ''}{item.status || 'OPEN'}{item.due_date ? ` · Due ${item.due_date}` : ''}
                         </div>
                       </li>
                     ))}
