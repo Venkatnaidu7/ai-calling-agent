@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import Link from 'next/link'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
 
@@ -53,7 +54,7 @@ export default function CallIntelligencePage() {
   const summary = data?.summary
   return (
     <main style={{ padding: 32, maxWidth: 1100, margin: '0 auto', fontFamily: 'system-ui, sans-serif' }}>
-      <p><a href="/calls">← Back to calls</a></p>
+      <p><Link href="/calls">← Back to calls</Link></p>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <div><div style={{ fontSize: 12, letterSpacing: 2 }}>VOICEOS</div><h1>Call Intelligence</h1><p style={{ color: '#666' }}>Transcript, AI analysis and follow-up actions.</p></div>
         <button onClick={load}>Refresh</button>
